@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "MediaGrab One Click",
+  "version": "0.1.0",
+  "description": "Invia la scheda corrente all'app MediaGrab in esecuzione sul PC.",
+  "permissions": ["activeTab", "tabs"],
+  "host_permissions": ["http://127.0.0.1:8765/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Scarica con MediaGrab"
+  }
+}
