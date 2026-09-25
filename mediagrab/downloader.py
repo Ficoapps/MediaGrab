@@ -92,6 +92,38 @@ def download_images(page_url: str, output_dir: Path, log: LogFn) -> int:
     return saved
 
 
+
+def _find_embedded_video_urls(page_url: str, log: LogFn) -> list[str]:
+    headers = {"User-Agent": USER_AGENT, "Referer": page_url}
+    response = requests.get(page_url, headers=headers, timeout=20)
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    urls: list[str] = []
+
+    for video in soup.find_all("video"):
+        value = video.get("src")
+        if value:
+            urls.append(urljoin(page_url, value))
+        for source in video.find_all("source"):
+            value = source.get("src")
+            if value:
+                urls.append(urljoin(page_url, value))
+
+    for key, value in (
+        ("property", "og:video"),
+        ("property", "og:video:url"),
+        ("property", "og:video:secure_url"),
+        ("name", "twitter:player:stream"),
+    ):
+        meta = soup.find("meta", attrs={key: value})
+        if meta and meta.get("content"):
+            urls.append(urljoin(page_url, meta["content"]))
+
+    clean = list(dict.fromkeys(u for u in urls if u.startswith(("http://", "https://"))))
+    log(f"Flussi video HTML trovati: {len(clean)}")
+    return clean
+
 def download_video(url: str, output_dir: Path, log: LogFn) -> None:
     from yt_dlp import YoutubeDL
 
@@ -133,8 +165,38 @@ def download_video(url: str, output_dir: Path, log: LogFn) -> None:
     }
 
     log("Analisi video con yt-dlp…")
-    with YoutubeDL(opts) as ydl:
-        ydl.download([url])
+    try:
+        with YoutubeDL(opts) as ydl:
+            ydl.download([url])
+        return
+    except Exception as exc:
+        log(f"Pagina non gestita direttamente da yt-dlp: {exc}")
+        log("Cerco un flusso video dichiarato nell'HTML della pagina…")
+
+    candidates = _find_embedded_video_urls(url, log)
+    if not candidates:
+        raise RuntimeError(
+            "Il sito non espone un video diretto nel codice HTML. "
+            "Potrebbe caricarlo tramite JavaScript o richiedere una sessione del browser."
+        )
+
+    last_error: Exception | None = None
+    for index, media_url in enumerate(candidates, start=1):
+        try:
+            log(f"Tentativo flusso video {index}/{len(candidates)}…")
+            fallback_opts = dict(opts)
+            fallback_opts["http_headers"] = {
+                "User-Agent": USER_AGENT,
+                "Referer": url,
+            }
+            with YoutubeDL(fallback_opts) as ydl:
+                ydl.download([media_url])
+            return
+        except Exception as exc:
+            last_error = exc
+            log(f"Flusso {index} non scaricato: {exc}")
+
+    raise RuntimeError("Nessuno dei flussi video trovati è risultato scaricabile.") from last_error
 
 
 def download_url(url: str, output: str | Path, mode: str, log: LogFn) -> None:
