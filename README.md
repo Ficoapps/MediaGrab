@@ -2,7 +2,7 @@
 
 ## Italiano
 
-MediaGrab è un'app desktop per Windows con estensione Chrome/Edge che prova a rilevare e scaricare media pubblicamente accessibili dalle pagine web.
+MediaGrab è un'app desktop per Windows con estensione Chrome/Edge che permette di rilevare e scaricare **video, audio e immagini** pubblicamente accessibili dalle pagine web.
 
 ### Novità 0.3
 
@@ -36,7 +36,7 @@ MediaGrab non rimuove DRM, non aggira paywall e non forza contenuti ai quali l'u
 
 ## English
 
-MediaGrab is a Windows desktop app with a Chrome/Edge extension that attempts to detect and download publicly accessible media from web pages.
+MediaGrab is a Windows desktop app with a Chrome/Edge extension that can detect and download publicly accessible **video, audio and images** from web pages.
 
 ### What's new in 0.3
 
