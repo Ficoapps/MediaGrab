@@ -1,113 +1,52 @@
-# MediaGrab
+# MediaGrab 0.2
 
-MediaGrab è un'app desktop per Windows che scarica **video e immagini** da una pagina web e può ricevere l'URL della scheda corrente da una piccola estensione Chrome/Edge.
+MediaGrab è un'app desktop per Windows con estensione Chrome/Edge che prova a rilevare e scaricare foto e video pubblicamente accessibili da una pagina web.
 
-> **Uso responsabile:** scarica solo contenuti che hai diritto di salvare. Il progetto non è progettato per aggirare DRM, paywall, autenticazioni, protezioni anticopia o altre restrizioni di accesso.
+## Come funziona
 
-## Funzioni
+MediaGrab usa più strategie in cascata:
 
-- Interfaccia grafica semplice.
-- Modalità `Solo video`, `Solo immagini`, `Tutto`.
-- Video gestiti tramite `yt-dlp`.
-- Immagini raccolte dagli elementi HTML `img`, `srcset`, `og:image` e `twitter:image`.
-- Estensione Chrome/Edge: un clic sull'icona invia la pagina corrente a MediaGrab.
-- Server locale solo su `127.0.0.1:8765`.
-- Build Windows `.exe` tramite PyInstaller.
-- Workflow GitHub Actions per produrre automaticamente l'EXE quando crei un tag `v*`.
+1. **yt-dlp** per i siti supportati direttamente.
+2. **Analisi HTML** per `<video>`, `<source>`, immagini, metadati Open Graph e URL media presenti nel codice sorgente.
+3. **Estensione browser** per rilevare media caricati dinamicamente nella scheda aperta, inclusi URL osservabili tramite DOM e Performance API.
+4. **HLS/DASH** quando la pagina espone manifest `.m3u8` o `.mpd` accessibili.
 
-## Requisiti
+L'app non rimuove DRM, non aggira paywall e non forza contenuti per i quali l'utente non dispone dell'accesso.
 
-- Windows 10/11.
-- Python 3.10 o superiore.
-- Per alcuni video, `ffmpeg` è necessario per unire traccia video e audio.
+## Requisiti per sviluppo
 
-## Installazione per sviluppatori
+- Python 3.10+
+- Windows 10/11 consigliato
+- FFmpeg consigliato per flussi con audio e video separati
 
-```powershell
+## Avvio da sorgente
+
+```bash
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
+.venv\\Scripts\\activate
 pip install -r requirements.txt
 python main.py
 ```
 
 ## Estensione Chrome / Edge
 
-1. Avvia MediaGrab e lascia attiva la voce **collegamento con estensione Chrome/Edge**.
+1. Avvia MediaGrab e lascia attivo **collegamento con estensione Chrome/Edge**.
 2. Apri `chrome://extensions` oppure `edge://extensions`.
 3. Attiva **Modalità sviluppatore**.
 4. Scegli **Carica estensione non pacchettizzata**.
 5. Seleziona la cartella `extension` del progetto.
-6. Fissa l'estensione alla barra degli strumenti.
-7. Apri una pagina web e premi l'icona MediaGrab.
+6. Apri una pagina con media visibile e premi l'icona di MediaGrab.
 
-L'app userà la modalità selezionata nell'interfaccia (`Video`, `Immagini` oppure `Tutto`).
+L'estensione invia all'app l'URL della pagina e le sorgenti media che riesce a osservare nella scheda corrente.
 
-## Creare l'EXE su Windows
+## Build Windows
 
-```powershell
-pip install -r requirements-dev.txt
-pyinstaller --noconfirm --clean --onefile --windowed --name MediaGrab main.py
-```
+Il workflow GitHub Actions `.github/workflows/build-windows.yml` esegue i test e crea `MediaGrab.exe` tramite PyInstaller.
 
-Il file viene generato in:
+## Limiti
 
-```text
-dist/MediaGrab.exe
-```
+Nessun downloader può garantire compatibilità letterale con ogni sito. Pagine con DRM, cifratura, CAPTCHA, sessioni non esportabili o player che nascondono completamente le sorgenti possono non essere scaricabili. MediaGrab tenta solo sorgenti accessibili senza aggirare protezioni.
 
-## Pubblicare su GitHub
+## Licenza
 
-```powershell
-git init
-git add .
-git commit -m "Initial MediaGrab MVP"
-git branch -M main
-git remote add origin https://github.com/TUO-USERNAME/MediaGrab.git
-git push -u origin main
-```
-
-Per far generare l'EXE a GitHub Actions:
-
-```powershell
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-## Struttura
-
-```text
-MediaGrab/
-├─ main.py
-├─ mediagrab/
-│  ├─ config.py
-│  ├─ downloader.py
-│  ├─ gui.py
-│  └─ server.py
-├─ extension/
-│  ├─ manifest.json
-│  └─ background.js
-├─ tests/
-├─ .github/workflows/build-windows.yml
-├─ requirements.txt
-├─ requirements-dev.txt
-├─ LICENSE
-└─ README.md
-```
-
-## Limiti dell'MVP
-
-- Le immagini caricate esclusivamente via JavaScript dopo lo scrolling potrebbero non essere rilevate.
-- Alcuni siti richiedono cookie/sessioni utente; questa versione non importa automaticamente i cookie del browser.
-- I contenuti protetti da DRM non sono supportati.
-- Alcuni siti cambiano spesso struttura e possono richiedere adattamenti.
-
-## Roadmap
-
-- Anteprima dei media prima del download.
-- Selettore qualità video e formato.
-- Download di una singola immagine con menu contestuale.
-- Coda download con percentuale e velocità.
-- Import opzionale dei cookie, solo quando legittimamente necessario e scelto dall'utente.
-- Installer Windows firmabile.
-- Aggiornamenti automatici dell'app.
+MIT.

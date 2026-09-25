@@ -23,7 +23,7 @@ MODE_LABELS_REVERSE = {v: k for k, v in MODE_LABELS.items()}
 class MediaGrabApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("MediaGrab")
+        self.title("MediaGrab 0.2")
         self.geometry("760x560")
         self.minsize(680, 480)
 
@@ -46,9 +46,9 @@ class MediaGrabApp(tk.Tk):
         root = ttk.Frame(self, padding=16)
         root.pack(fill="both", expand=True)
 
-        title = ttk.Label(root, text="MediaGrab", font=("Segoe UI", 20, "bold"))
+        title = ttk.Label(root, text="MediaGrab 0.2", font=("Segoe UI", 20, "bold"))
         title.pack(anchor="w")
-        ttk.Label(root, text="Scarica media dalle pagine che puoi visualizzare e per cui hai diritto di effettuare il download.").pack(anchor="w", pady=(0, 16))
+        ttk.Label(root, text="Rileva e scarica media pubblicamente accessibili dalle pagine che puoi visualizzare.").pack(anchor="w", pady=(0, 16))
 
         form = ttk.Frame(root)
         form.pack(fill="x")
