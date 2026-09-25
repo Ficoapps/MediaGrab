@@ -8,6 +8,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -28,3 +31,9 @@ jobs:
           name: MediaGrab-Windows-v0.3.0
           path: dist/MediaGrab.exe
           retention-days: 30
+      - name: Publish GitHub Release v0.3.0
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[release 0.3.0]')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v0.3.0" "dist/MediaGrab.exe#MediaGrab.exe" --target "${{ github.sha }}" --title "MediaGrab v0.3.0" --notes "MediaGrab for Windows. Downloads publicly accessible video, audio and images from web pages. Includes audio-only mode, multiple URL downloads, and Italian/English interface."
