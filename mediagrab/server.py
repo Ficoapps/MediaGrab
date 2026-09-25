@@ -34,7 +34,13 @@ class LocalServer:
                 self.send_header("Access-Control-Allow-Headers", "Content-Type")
                 self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS, GET")
                 origin = self.headers.get("Origin", "")
-                if origin.startswith(("chrome-extension://", "edge-extension://", "moz-extension://")):
+                if origin.startswith(
+                    (
+                        "chrome-extension://",
+                        "edge-extension://",
+                        "moz-extension://",
+                    )
+                ):
                     self.send_header("Access-Control-Allow-Origin", origin)
 
             def do_OPTIONS(self):  # noqa: N802
@@ -44,7 +50,9 @@ class LocalServer:
 
             def do_GET(self):  # noqa: N802
                 if self.path == "/health":
-                    body = json.dumps({"ok": True, "app": "MediaGrab", "version": "0.2.0"}).encode()
+                    body = json.dumps(
+                        {"ok": True, "app": "MediaGrab", "version": "0.3.0"}
+                    ).encode()
                     self.send_response(200)
                     self._common_headers()
                     self.send_header("Content-Type", "application/json")
@@ -52,6 +60,7 @@ class LocalServer:
                     self.end_headers()
                     self.wfile.write(body)
                     return
+
                 self.send_response(404)
                 self._common_headers()
                 self.end_headers()
@@ -67,10 +76,12 @@ class LocalServer:
                     length = int(self.headers.get("Content-Length", "0"))
                     if length > 512_000:
                         raise ValueError("Richiesta troppo grande")
+
                     payload = json.loads(self.rfile.read(length) or b"{}")
                     url = str(payload.get("url", "")).strip()
                     mode = str(payload.get("mode") or config.mode)
-                    if mode not in {"video", "images", "all"}:
+
+                    if mode not in {"video", "audio", "images", "all"}:
                         mode = config.mode
                     if not url.startswith(("http://", "https://")):
                         raise ValueError("URL mancante o non valido")
@@ -78,6 +89,7 @@ class LocalServer:
                     raw_candidates = payload.get("candidates") or []
                     if not isinstance(raw_candidates, list):
                         raw_candidates = []
+
                     candidates = [
                         str(item).strip()
                         for item in raw_candidates[:300]
@@ -91,10 +103,21 @@ class LocalServer:
                         args=(url, mode, candidates),
                         daemon=True,
                     ).start()
-                    body = json.dumps({"ok": True, "queued": True, "mode": mode, "candidates": len(candidates)}).encode()
+
+                    body = json.dumps(
+                        {
+                            "ok": True,
+                            "queued": True,
+                            "mode": mode,
+                            "candidates": len(candidates),
+                        }
+                    ).encode()
                     self.send_response(202)
+
                 except Exception as exc:
-                    body = json.dumps({"ok": False, "error": str(exc)}).encode()
+                    body = json.dumps(
+                        {"ok": False, "error": str(exc)}
+                    ).encode()
                     self.send_response(400)
 
                 self._common_headers()
@@ -103,12 +126,27 @@ class LocalServer:
                 self.end_headers()
                 self.wfile.write(body)
 
-            def _worker(self, url: str, mode: str, candidates: list[str]) -> None:
+            def _worker(
+                self,
+                url: str,
+                mode: str,
+                candidates: list[str],
+            ) -> None:
                 try:
                     log(f"Richiesta dal browser: {url}")
                     if candidates:
-                        log(f"Il browser ha rilevato {len(candidates)} possibili file/flussi media.")
-                    download_url(url, config.output_dir, mode, log, browser_candidates=candidates)
+                        log(
+                            f"Il browser ha rilevato "
+                            f"{len(candidates)} possibili file/flussi media."
+                        )
+
+                    download_url(
+                        url,
+                        config.output_dir,
+                        mode,
+                        log,
+                        browser_candidates=candidates,
+                    )
                     log("Richiesta browser completata.")
                 except Exception as exc:
                     log(f"Errore richiesta browser: {exc}")
@@ -116,10 +154,19 @@ class LocalServer:
             def log_message(self, format: str, *args) -> None:
                 return
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", config.port), Handler)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._server = ThreadingHTTPServer(
+            ("127.0.0.1", config.port),
+            Handler,
+        )
+        self._thread = threading.Thread(
+            target=self._server.serve_forever,
+            daemon=True,
+        )
         self._thread.start()
-        self.log(f"Connettore browser MediaGrab 0.2 attivo su http://127.0.0.1:{config.port}")
+        self.log(
+            f"Connettore browser MediaGrab 0.3 attivo su "
+            f"http://127.0.0.1:{config.port}"
+        )
 
     def stop(self) -> None:
         if self._server:

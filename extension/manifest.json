@@ -1,14 +1,14 @@
 {
   "manifest_version": 3,
   "name": "MediaGrab One Click",
-  "version": "0.2.0",
-  "description": "Rileva media nella scheda corrente e li invia all'app desktop MediaGrab.",
+  "version": "0.3.0",
+  "description": "Detects media in the current tab and sends it to the MediaGrab desktop app.",
   "permissions": ["activeTab", "scripting"],
   "host_permissions": ["http://127.0.0.1:8765/*"],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Scarica con MediaGrab"
+    "default_title": "Download with MediaGrab"
   }
 }
