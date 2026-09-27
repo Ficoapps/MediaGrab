@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+- Added selectable **video quality**: Best, 2160p, 1440p, 1080p, 720p, 480p and 360p.
+- Added selectable **audio quality**: Best, 320, 256, 192, 128 and 96 kbps.
+- Quality preferences are persisted in the app configuration.
+- Browser-extension downloads inherit the selected quality settings.
+- Audio-only MP3 conversion uses the selected bitrate when FFmpeg is available.
+- Updated tests and Windows release build.
+- No DRM, paywall, or access-control bypass.
+
 ## 0.3.0
 
 - Added **audio-only** download mode.

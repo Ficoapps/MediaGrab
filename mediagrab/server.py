@@ -6,7 +6,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 
 from .config import AppConfig
-from .downloader import download_url
+from .downloader import (
+    VALID_AUDIO_QUALITIES,
+    VALID_VIDEO_QUALITIES,
+    download_url,
+)
 
 LogFn = Callable[[str], None]
 
@@ -51,7 +55,7 @@ class LocalServer:
             def do_GET(self):  # noqa: N802
                 if self.path == "/health":
                     body = json.dumps(
-                        {"ok": True, "app": "MediaGrab", "version": "0.3.0"}
+                        {"ok": True, "app": "MediaGrab", "version": "0.4.0"}
                     ).encode()
                     self.send_response(200)
                     self._common_headers()
@@ -80,9 +84,19 @@ class LocalServer:
                     payload = json.loads(self.rfile.read(length) or b"{}")
                     url = str(payload.get("url", "")).strip()
                     mode = str(payload.get("mode") or config.mode)
+                    video_quality = str(
+                        payload.get("video_quality") or config.video_quality
+                    )
+                    audio_quality = str(
+                        payload.get("audio_quality") or config.audio_quality
+                    )
 
                     if mode not in {"video", "audio", "images", "all"}:
                         mode = config.mode
+                    if video_quality not in VALID_VIDEO_QUALITIES:
+                        video_quality = config.video_quality
+                    if audio_quality not in VALID_AUDIO_QUALITIES:
+                        audio_quality = config.audio_quality
                     if not url.startswith(("http://", "https://")):
                         raise ValueError("URL mancante o non valido")
 
@@ -100,7 +114,13 @@ class LocalServer:
 
                     threading.Thread(
                         target=self._worker,
-                        args=(url, mode, candidates),
+                        args=(
+                            url,
+                            mode,
+                            candidates,
+                            video_quality,
+                            audio_quality,
+                        ),
                         daemon=True,
                     ).start()
 
@@ -110,6 +130,8 @@ class LocalServer:
                             "queued": True,
                             "mode": mode,
                             "candidates": len(candidates),
+                            "video_quality": video_quality,
+                            "audio_quality": audio_quality,
                         }
                     ).encode()
                     self.send_response(202)
@@ -131,6 +153,8 @@ class LocalServer:
                 url: str,
                 mode: str,
                 candidates: list[str],
+                video_quality: str,
+                audio_quality: str,
             ) -> None:
                 try:
                     log(f"Richiesta dal browser: {url}")
@@ -146,6 +170,8 @@ class LocalServer:
                         mode,
                         log,
                         browser_candidates=candidates,
+                        video_quality=video_quality,
+                        audio_quality=audio_quality,
                     )
                     log("Richiesta browser completata.")
                 except Exception as exc:
@@ -164,7 +190,7 @@ class LocalServer:
         )
         self._thread.start()
         self.log(
-            f"Connettore browser MediaGrab 0.3 attivo su "
+            f"Connettore browser MediaGrab 0.4 attivo su "
             f"http://127.0.0.1:{config.port}"
         )
 

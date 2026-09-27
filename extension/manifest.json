@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MediaGrab One Click",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Detects media in the current tab and sends it to the MediaGrab desktop app.",
   "permissions": ["activeTab", "scripting"],
   "host_permissions": ["http://127.0.0.1:8765/*"],

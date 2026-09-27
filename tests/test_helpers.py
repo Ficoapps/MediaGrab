@@ -1,5 +1,7 @@
 from mediagrab.downloader import (
+    _audio_format_selector,
     _safe_name,
+    _video_format_selector,
     extract_media_from_html,
     normalize_batch_urls,
 )
@@ -60,3 +62,20 @@ def test_normalize_batch_urls_keeps_order_and_removes_duplicates():
         "https://example.test/a",
         "https://example.test/b",
     ]
+
+
+def test_video_quality_format_selector():
+    assert _video_format_selector("1080", "best", True) == (
+        "bv*[height<=1080]+ba/b[height<=1080]"
+    )
+    assert _video_format_selector("720", "192", True) == (
+        "bv*[height<=720]+ba[abr<=192]/bv*[height<=720]+ba/b[height<=720]"
+    )
+    assert _video_format_selector("480", "128", False) == "b[height<=480]"
+
+
+def test_audio_quality_format_selector():
+    assert _audio_format_selector("best") == "bestaudio/best"
+    assert _audio_format_selector("192") == (
+        "bestaudio[abr<=192]/bestaudio/best"
+    )

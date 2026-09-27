@@ -1,12 +1,20 @@
-# MediaGrab 0.3
+# MediaGrab 0.4
 
 ## Italiano
 
 MediaGrab è un'app desktop per Windows con estensione Chrome/Edge che permette di rilevare e scaricare **video, audio e immagini** pubblicamente accessibili dalle pagine web.
 
-### Novità 0.3
+### Novità 0.4
 
-- **Solo audio**: nuova modalità per scaricare la migliore traccia audio disponibile.
+- **Qualità video selezionabile**: Migliore disponibile, 2160p, 1440p, 1080p, 720p, 480p o 360p.
+- **Qualità audio selezionabile**: Migliore disponibile, 320, 256, 192, 128 o 96 kbps.
+- Per i video MediaGrab sceglie il miglior flusso disponibile entro la risoluzione indicata.
+- In modalità **Solo audio**, con FFmpeg installato, il bitrate scelto viene usato per l'MP3 finale.
+- Le preferenze di qualità vengono salvate e usate anche dai download avviati tramite estensione Chrome/Edge.
+
+### Funzioni già presenti
+
+- **Solo audio**: scarica la migliore traccia audio disponibile.
 - Se FFmpeg è disponibile, l'audio viene convertito in **MP3**; altrimenti viene mantenuto il miglior formato audio originale disponibile.
 - **Download multiplo**: puoi incollare più URL, uno per riga, e MediaGrab li elabora in sequenza.
 - **Interfaccia bilingue**: selettore **Italiano / English** direttamente nell'app.
@@ -38,13 +46,21 @@ MediaGrab non rimuove DRM, non aggira paywall e non forza contenuti ai quali l'u
 
 MediaGrab is a Windows desktop app with a Chrome/Edge extension that can detect and download publicly accessible **video, audio and images** from web pages.
 
-### What's new in 0.3
+### What's new in 0.4
 
-- **Audio only**: download the best available audio track.
-- If FFmpeg is available, audio is converted to **MP3**; otherwise MediaGrab keeps the best original audio format available.
-- **Multiple downloads**: paste multiple URLs, one per line, and MediaGrab processes them sequentially.
-- **Bilingual interface**: switch between **Italiano / English** directly in the app.
-- The browser connector also detects audio sources such as MP3, M4A, AAC, OGG, Opus, WAV and FLAC.
+- **Selectable video quality**: Best available, 2160p, 1440p, 1080p, 720p, 480p or 360p.
+- **Selectable audio quality**: Best available, 320, 256, 192, 128 or 96 kbps.
+- For video, MediaGrab selects the best stream available within the chosen resolution.
+- In **Audio only** mode, when FFmpeg is installed, the selected bitrate is used for the final MP3.
+- Quality preferences are saved and also used for downloads started from the Chrome/Edge extension.
+
+### Existing features
+
+- **Audio only** mode.
+- MP3 conversion when FFmpeg is available.
+- **Multiple downloads**: paste multiple URLs, one per line.
+- **Bilingual interface**: Italiano / English.
+- Browser connector detection for common video, audio and image formats.
 
 ### Available modes
 
@@ -52,10 +68,6 @@ MediaGrab is a Windows desktop app with a Chrome/Edge extension that can detect 
 - Video only
 - Audio only
 - Images only
-
-### Multiple downloads
-
-Paste one or more addresses in the URL field, one per line. MediaGrab queues them and continues with the next URL even if one download fails.
 
 ### How it works
 

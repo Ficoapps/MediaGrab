@@ -21,6 +21,8 @@ VIDEO_EXTENSIONS = {".mp4", ".webm", ".mkv", ".mov", ".m4v", ".avi", ".ts"}
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".flac"}
 MANIFEST_EXTENSIONS = {".m3u8", ".mpd"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp"}
+VALID_VIDEO_QUALITIES = {"best", "2160", "1440", "1080", "720", "480", "360"}
+VALID_AUDIO_QUALITIES = {"best", "320", "256", "192", "128", "96"}
 MEDIA_URL_RE = re.compile(
     r"https?://[^\s\"'<>]+?\.(?:mp4|webm|mkv|mov|m4v|avi|ts|mp3|m4a|aac|ogg|opus|wav|flac|m3u8|mpd|jpg|jpeg|png|webp|gif|avif)(?:\?[^\s\"'<>]*)?",
     re.IGNORECASE,
@@ -252,11 +254,52 @@ def download_images(
     return saved
 
 
+def _normalized_video_quality(value: str) -> str:
+    value = str(value or "best").lower()
+    return value if value in VALID_VIDEO_QUALITIES else "best"
+
+
+def _normalized_audio_quality(value: str) -> str:
+    value = str(value or "best").lower()
+    return value if value in VALID_AUDIO_QUALITIES else "best"
+
+
+def _video_format_selector(
+    video_quality: str,
+    audio_quality: str,
+    has_ffmpeg: bool,
+) -> str:
+    video_quality = _normalized_video_quality(video_quality)
+    audio_quality = _normalized_audio_quality(audio_quality)
+
+    if not has_ffmpeg:
+        if video_quality == "best":
+            return "b"
+        return f"b[height<={video_quality}]"
+
+    video = "bv*" if video_quality == "best" else f"bv*[height<={video_quality}]"
+    combined = "b" if video_quality == "best" else f"b[height<={video_quality}]"
+
+    if audio_quality == "best":
+        return f"{video}+ba/{combined}"
+
+    return f"{video}+ba[abr<={audio_quality}]/{video}+ba/{combined}"
+
+
+def _audio_format_selector(audio_quality: str) -> str:
+    audio_quality = _normalized_audio_quality(audio_quality)
+    if audio_quality == "best":
+        return "bestaudio/best"
+    return f"bestaudio[abr<={audio_quality}]/bestaudio/best"
+
+
 def _ytdlp_options(
     target_dir: Path,
     log: LogFn,
     referer: str | None = None,
     audio_only: bool = False,
+    video_quality: str = "best",
+    audio_quality: str = "best",
 ) -> dict:
     class Logger:
         def debug(self, msg: str) -> None:
@@ -278,11 +321,13 @@ def _ytdlp_options(
             log(f"Download {label} completato. Elaborazione finale…")
 
     has_ffmpeg = shutil.which("ffmpeg") is not None
+    video_quality = _normalized_video_quality(video_quality)
+    audio_quality = _normalized_audio_quality(audio_quality)
 
     if audio_only:
         opts: dict = {
             "outtmpl": str(target_dir / "%(title).180B [%(id)s].%(ext)s"),
-            "format": "bestaudio/best",
+            "format": "bestaudio/best" if has_ffmpeg else _audio_format_selector(audio_quality),
             "noplaylist": True,
             "windowsfilenames": True,
             "logger": Logger(),
@@ -296,18 +341,22 @@ def _ytdlp_options(
                 {
                     "key": "FFmpegExtractAudio",
                     "preferredcodec": "mp3",
-                    "preferredquality": "0",
+                    "preferredquality": "0" if audio_quality == "best" else audio_quality,
                 }
             ]
-            log("Audio: FFmpeg rilevato, conversione finale in MP3.")
+            quality_label = "migliore disponibile" if audio_quality == "best" else f"{audio_quality} kbps"
+            log(f"Audio: FFmpeg rilevato, conversione finale in MP3 ({quality_label}).")
         else:
-            log("Audio: FFmpeg non rilevato, manterrò il miglior formato audio disponibile.")
+            quality_label = "migliore disponibile" if audio_quality == "best" else f"fino a {audio_quality} kbps"
+            log(f"Audio: FFmpeg non rilevato, formato originale ({quality_label}).")
     else:
         if not has_ffmpeg:
             log("FFmpeg non rilevato: alcuni flussi separati audio/video potrebbero non essere unibili.")
+            if audio_quality != "best":
+                log("Senza FFmpeg non posso scegliere separatamente il bitrate audio di un video già combinato.")
         opts = {
             "outtmpl": str(target_dir / "%(title).180B [%(id)s].%(ext)s"),
-            "format": "bv*+ba/b" if has_ffmpeg else "b",
+            "format": _video_format_selector(video_quality, audio_quality, has_ffmpeg),
             "merge_output_format": "mp4" if has_ffmpeg else None,
             "noplaylist": True,
             "windowsfilenames": True,
@@ -329,6 +378,8 @@ def _download_with_ytdlp(
     log: LogFn,
     referer: str | None = None,
     audio_only: bool = False,
+    video_quality: str = "best",
+    audio_quality: str = "best",
 ) -> None:
     from yt_dlp import YoutubeDL
 
@@ -338,6 +389,8 @@ def _download_with_ytdlp(
             log,
             referer=referer,
             audio_only=audio_only,
+            video_quality=video_quality,
+            audio_quality=audio_quality,
         )
     ) as ydl:
         ydl.download([target_url])
@@ -348,6 +401,8 @@ def download_video(
     output_dir: Path,
     log: LogFn,
     browser_candidates: Iterable[str] | None = None,
+    video_quality: str = "best",
+    audio_quality: str = "best",
 ) -> None:
     video_dir = output_dir / "video"
     video_dir.mkdir(parents=True, exist_ok=True)
@@ -355,13 +410,13 @@ def download_video(
     direct_ext = _suffix(url)
     if direct_ext in VIDEO_EXTENSIONS or direct_ext in MANIFEST_EXTENSIONS:
         log("URL media diretto rilevato.")
-        _download_with_ytdlp(url, video_dir, log)
+        _download_with_ytdlp(url, video_dir, log, video_quality=video_quality, audio_quality=audio_quality)
         return
 
     log("Metodo 1/3: analisi con yt-dlp…")
     first_error: Exception | None = None
     try:
-        _download_with_ytdlp(url, video_dir, log)
+        _download_with_ytdlp(url, video_dir, log, video_quality=video_quality, audio_quality=audio_quality)
         return
     except Exception as exc:
         first_error = exc
@@ -397,7 +452,7 @@ def download_video(
     for index, media_url in enumerate(candidates, start=1):
         try:
             log(f"Tentativo sorgente {index}/{len(candidates)}: {media_url[:120]}")
-            _download_with_ytdlp(media_url, video_dir, log, referer=url)
+            _download_with_ytdlp(media_url, video_dir, log, referer=url, video_quality=video_quality, audio_quality=audio_quality)
             return
         except Exception as exc:
             last_error = exc
@@ -411,6 +466,7 @@ def download_audio(
     output_dir: Path,
     log: LogFn,
     browser_candidates: Iterable[str] | None = None,
+    audio_quality: str = "best",
 ) -> None:
     audio_dir = output_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -422,13 +478,13 @@ def download_audio(
         or direct_ext in MANIFEST_EXTENSIONS
     ):
         log("URL media diretto rilevato: estraggo solo l'audio.")
-        _download_with_ytdlp(url, audio_dir, log, audio_only=True)
+        _download_with_ytdlp(url, audio_dir, log, audio_only=True, audio_quality=audio_quality)
         return
 
     log("Audio 1/3: estrazione tramite yt-dlp…")
     first_error: Exception | None = None
     try:
-        _download_with_ytdlp(url, audio_dir, log, audio_only=True)
+        _download_with_ytdlp(url, audio_dir, log, audio_only=True, audio_quality=audio_quality)
         return
     except Exception as exc:
         first_error = exc
@@ -474,6 +530,7 @@ def download_audio(
                 log,
                 referer=url,
                 audio_only=True,
+                audio_quality=audio_quality,
             )
             return
         except Exception as exc:
@@ -489,6 +546,8 @@ def download_url(
     mode: str,
     log: LogFn,
     browser_candidates: Iterable[str] | None = None,
+    video_quality: str = "best",
+    audio_quality: str = "best",
 ) -> None:
     url = url.strip()
     if not url.startswith(("http://", "https://")):
@@ -501,6 +560,8 @@ def download_url(
     log(f"URL: {url}")
     log(f"Cartella: {output_dir}")
     log(f"Modalità: {mode}")
+    log(f"Qualità video: {_normalized_video_quality(video_quality)}")
+    log(f"Qualità audio: {_normalized_audio_quality(audio_quality)}")
     if candidates:
         log(f"Sorgenti browser ricevute: {len(candidates)}")
 
@@ -508,14 +569,27 @@ def download_url(
 
     if mode in ("video", "all"):
         try:
-            download_video(url, output_dir, log, browser_candidates=candidates)
+            download_video(
+                url,
+                output_dir,
+                log,
+                browser_candidates=candidates,
+                video_quality=video_quality,
+                audio_quality=audio_quality,
+            )
         except Exception as exc:
             errors.append(f"video: {exc}")
             log(f"Video non scaricato: {exc}")
 
     if mode == "audio":
         try:
-            download_audio(url, output_dir, log, browser_candidates=candidates)
+            download_audio(
+                url,
+                output_dir,
+                log,
+                browser_candidates=candidates,
+                audio_quality=audio_quality,
+            )
         except Exception as exc:
             errors.append(f"audio: {exc}")
             log(f"Audio non scaricato: {exc}")

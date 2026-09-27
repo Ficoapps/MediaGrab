@@ -13,6 +13,8 @@ class AppConfig:
     output_dir: str = str(Path.home() / "Downloads" / "MediaGrab")
     mode: str = "all"  # video | audio | images | all
     language: str = "it"  # it | en
+    video_quality: str = "best"
+    audio_quality: str = "best"
     port: int = 8765
 
     @classmethod
