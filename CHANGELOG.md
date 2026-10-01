@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2
+
+- Validate every URL before handing it to yt-dlp, including URLs discovered from HTML fallback detection.
+- Replaced the thread-per-request local HTTP listener with a single-threaded listener; actual downloads remain in the bounded worker pool.
+- Added a regression test ensuring private yt-dlp targets are rejected before extractor startup.
+
 ## 0.4.1
 
 - Protected the local browser connector with a random session token.
