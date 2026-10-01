@@ -1,8 +1,13 @@
-# MediaGrab 0.4.1
+# MediaGrab 0.4.2
 
 ## Italiano
 
 MediaGrab è un'app desktop per Windows con estensione Chrome/Edge che permette di rilevare e scaricare **video, audio e immagini pubblicamente accessibili** dalle pagine web.
+
+### Novità 0.4.2
+
+- Anche gli URL consegnati a **yt-dlp** vengono validati prima del download, compresi quelli scoperti tramite il fallback HTML.
+- Il listener HTTP locale non crea più un thread per ogni richiesta; i download pesanti continuano a usare il pool limitato.
 
 ### Novità 0.4.1
 
@@ -45,7 +50,7 @@ Per i video MediaGrab sceglie il miglior flusso disponibile entro la risoluzione
 6. Attiva **Modalità sviluppatore**.
 7. Seleziona **Carica estensione non pacchettizzata** e indica la cartella estratta.
 
-**App ed estensione 0.4.1 vanno usate insieme**, perché il collegamento locale usa il nuovo token di sessione.
+**App ed estensione 0.4.2 vanno usate insieme**, perché il collegamento locale usa il nuovo token di sessione.
 
 ### Download multiplo
 
@@ -65,6 +70,11 @@ MediaGrab non rimuove DRM, non aggira paywall e non forza accesso a contenuti ai
 ## English
 
 MediaGrab is a Windows desktop app with a Chrome/Edge extension that can detect and download publicly accessible **video, audio and images** from web pages.
+
+### What's new in 0.4.2
+
+- URLs passed to **yt-dlp** are now validated before extraction, including URLs discovered through HTML fallback detection.
+- The local HTTP listener no longer creates one thread per request; heavy downloads still run in the bounded worker pool.
 
 ### What's new in 0.4.1
 
@@ -107,7 +117,7 @@ For video, MediaGrab chooses the best stream available within the selected resol
 6. Enable **Developer mode**.
 7. Choose **Load unpacked** and select the extracted extension folder.
 
-**App and extension 0.4.1 must be used together** because the local connector now uses a session token.
+**App and extension 0.4.2 must be used together** because the local connector now uses a session token.
 
 ### Multiple downloads
 

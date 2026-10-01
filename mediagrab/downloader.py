@@ -535,6 +535,8 @@ def _download_with_ytdlp(
     video_quality: str = "best",
     audio_quality: str = "best",
 ) -> None:
+    validate_public_http_url(target_url)
+
     from yt_dlp import YoutubeDL
 
     with YoutubeDL(

@@ -14,3 +14,6 @@ Non configurare MediaGrab per ascoltare su interfacce di rete pubbliche.
 Non inserire token, password o cookie personali nel repository.
 
 Per vulnerabilità, usare GitHub Security Advisories invece di pubblicare credenziali o dettagli sensibili in una issue.
+
+
+Dalla versione 0.4.2 anche ogni URL passato a yt-dlp viene validato prima dell'estrazione e il listener HTTP locale usa un server a singolo thread; i download pesanti restano nel pool limitato.

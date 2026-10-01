@@ -11,6 +11,7 @@ from mediagrab.config import AppConfig
 from mediagrab.downloader import (
     DownloadResult,
     _audio_format_selector,
+    _download_with_ytdlp,
     _safe_name,
     _video_format_selector,
     download_images,
@@ -115,6 +116,19 @@ def test_validate_public_url_rejects_local_and_credentials():
             pass
         else:
             raise AssertionError(f"URL should be rejected: {url}")
+
+
+def test_ytdlp_rejects_private_target_before_extractor(tmp_path):
+    try:
+        _download_with_ytdlp(
+            "http://127.0.0.1/private.mp4",
+            tmp_path,
+            lambda _: None,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Private yt-dlp target should be rejected")
 
 
 def test_download_images_accepts_direct_image_url(monkeypatch, tmp_path):
