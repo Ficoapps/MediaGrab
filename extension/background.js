@@ -1,4 +1,6 @@
-const API = "http://127.0.0.1:8765/download";
+const BASE_API = "http://127.0.0.1:8765";
+const HEALTH_API = `${BASE_API}/health`;
+const DOWNLOAD_API = `${BASE_API}/download`;
 
 function collectMediaFromPage() {
   const urls = new Set();
@@ -28,6 +30,13 @@ function collectMediaFromPage() {
     add(el.getAttribute("data-src"));
     add(el.getAttribute("data-original"));
     add(el.getAttribute("data-lazy-src"));
+
+    const srcset = el.getAttribute("srcset") || el.getAttribute("data-srcset");
+    if (srcset) {
+      srcset.split(",").forEach((part) => {
+        add(part.trim().split(/\s+/)[0]);
+      });
+    }
   });
 
   document.querySelectorAll("source").forEach((el) => {
@@ -52,7 +61,7 @@ function collectMediaFromPage() {
     "meta[name='twitter:image']"
   ).forEach((el) => add(el.content));
 
-  if (performance && performance.getEntriesByType) {
+  if (globalThis.performance?.getEntriesByType) {
     performance.getEntriesByType("resource").forEach((entry) => {
       if (
         /\.(mp4|webm|mkv|mov|m4v|avi|ts|mp3|m4a|aac|ogg|opus|wav|flac|m3u8|mpd|jpg|jpeg|png|webp|gif|avif)(\?|$)/i.test(
@@ -64,7 +73,7 @@ function collectMediaFromPage() {
     });
   }
 
-  return Array.from(urls).slice(0, 300);
+  return Array.from(urls).slice(0, 100);
 }
 
 async function setBadge(tabId, text) {
@@ -73,6 +82,23 @@ async function setBadge(tabId, text) {
     () => chrome.action.setBadgeText({ text: "", tabId }),
     2200
   );
+}
+
+async function getSessionToken() {
+  const response = await fetch(HEALTH_API, {
+    method: "GET",
+    headers: {
+      "X-MediaGrab-Client": "extension",
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`Health HTTP ${response.status}`);
+  }
+  const payload = await response.json();
+  if (!payload.session_token) {
+    throw new Error("MediaGrab session token unavailable");
+  }
+  return payload.session_token;
 }
 
 chrome.action.onClicked.addListener(async (tab) => {
@@ -88,10 +114,15 @@ chrome.action.onClicked.addListener(async (tab) => {
     });
 
     const candidates = injected?.[0]?.result || [];
+    const sessionToken = await getSessionToken();
 
-    const response = await fetch(API, {
+    const response = await fetch(DOWNLOAD_API, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-MediaGrab-Client": "extension",
+        "X-MediaGrab-Token": sessionToken,
+      },
       body: JSON.stringify({
         url: tab.url,
         candidates,
@@ -99,7 +130,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     });
 
     if (!response.ok) {
-      throw new Error("HTTP " + response.status);
+      throw new Error(`HTTP ${response.status}`);
     }
 
     await setBadge(tab.id, "OK");

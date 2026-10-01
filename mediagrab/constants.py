@@ -1,0 +1,6 @@
+VIDEO_QUALITY_OPTIONS = ("best", "2160", "1440", "1080", "720", "480", "360")
+AUDIO_QUALITY_OPTIONS = ("best", "320", "256", "192", "128", "96")
+VALID_VIDEO_QUALITIES = frozenset(VIDEO_QUALITY_OPTIONS)
+VALID_AUDIO_QUALITIES = frozenset(AUDIO_QUALITY_OPTIONS)
+VALID_MODES = frozenset({"video", "audio", "images", "all"})
+VALID_LANGUAGES = frozenset({"it", "en"})
