@@ -5,7 +5,7 @@ import json
 import secrets
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Callable
 
 from . import __version__
@@ -33,7 +33,7 @@ class LocalServer:
     def __init__(self, config: AppConfig, log: LogFn):
         self.config = config
         self.log = log
-        self._server: ThreadingHTTPServer | None = None
+        self._server: HTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._executor: ThreadPoolExecutor | None = None
         self._pending_slots: threading.BoundedSemaphore | None = None
@@ -253,7 +253,7 @@ class LocalServer:
                 return
 
         try:
-            self._server = ThreadingHTTPServer(
+            self._server = HTTPServer(
                 ("127.0.0.1", config.port),
                 Handler,
             )
