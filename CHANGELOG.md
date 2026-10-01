@@ -4,7 +4,7 @@
 
 - Protected the local browser connector with a random session token.
 - Rejects unauthorized web origins and non-JSON download requests.
-- Added a bounded download queue with at most 3 active workers and 8 pending jobs.
+- Added a bounded download queue with at most 3 active workers and 8 queued/running jobs.
 - Added validation against localhost/private/link-local destinations for browser-triggered requests.
 - Fixed `all` mode falsely reporting complete success when only video or images succeeded.
 - Added direct image URL support.
@@ -16,7 +16,7 @@
 - Hardened configuration loading and made configuration saves atomic.
 - Pinned direct Python dependencies and removed unused Pillow dependency.
 - GitHub Actions now uses read-only permissions for builds and write access only for the release job.
-- Release now includes the matching Chrome/Edge extension ZIP.
+- Releases include the matching Chrome/Edge extension ZIP.
 
 ## 0.4.0
 
@@ -38,3 +38,20 @@
 - Added audio URL extraction from HTML and Open Graph metadata.
 - Updated tests and Windows build artifact to 0.3.0.
 - No DRM, paywall, or access-control bypass.
+
+## 0.2.0
+
+- Multi-strategy download engine: yt-dlp, static HTML and browser-detected sources.
+- Detection of MP4, WebM, HLS (`.m3u8`) and DASH (`.mpd`) when exposed by the page.
+- Chrome/Edge extension scans DOM and Performance API.
+- Improved lazy-loaded image and dynamic-source support.
+- Clearer errors when media cannot be detected.
+- Windows workflow runs tests before building.
+- No DRM, paywall, or access-control bypass.
+
+## 0.1.0
+
+- First MVP.
+- Video download through yt-dlp.
+- Image download from HTML.
+- Local connector for Chrome/Edge extension.
