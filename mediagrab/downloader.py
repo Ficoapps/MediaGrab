@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import ipaddress
 import mimetypes
 import re
 import shutil
+import socket
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 from urllib.parse import unquote, urljoin, urlparse
@@ -10,7 +13,12 @@ from urllib.parse import unquote, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from . import __version__
+from .constants import VALID_AUDIO_QUALITIES, VALID_MODES, VALID_VIDEO_QUALITIES
+
 LogFn = Callable[[str], None]
+PageMedia = dict[str, list[str]]
+PageMediaProvider = Callable[[], PageMedia]
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -21,17 +29,46 @@ VIDEO_EXTENSIONS = {".mp4", ".webm", ".mkv", ".mov", ".m4v", ".avi", ".ts"}
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".flac"}
 MANIFEST_EXTENSIONS = {".m3u8", ".mpd"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp"}
-VALID_VIDEO_QUALITIES = {"best", "2160", "1440", "1080", "720", "480", "360"}
-VALID_AUDIO_QUALITIES = {"best", "320", "256", "192", "128", "96"}
+MAX_HTML_BYTES = 10 * 1024 * 1024
+MAX_IMAGE_BYTES = 200 * 1024 * 1024
+MAX_REDIRECTS = 5
+WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
 MEDIA_URL_RE = re.compile(
-    r"https?://[^\s\"'<>]+?\.(?:mp4|webm|mkv|mov|m4v|avi|ts|mp3|m4a|aac|ogg|opus|wav|flac|m3u8|mpd|jpg|jpeg|png|webp|gif|avif)(?:\?[^\s\"'<>]*)?",
+    r"https?://[^\s\"'<>]+?\."
+    r"(?:mp4|webm|mkv|mov|m4v|avi|ts|mp3|m4a|aac|ogg|opus|wav|flac|"
+    r"m3u8|mpd|jpg|jpeg|png|webp|gif|avif)(?:\?[^\s\"'<>]*)?",
     re.IGNORECASE,
 )
 
 
+@dataclass
+class DownloadResult:
+    succeeded: list[str] = field(default_factory=list)
+    errors: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def partial(self) -> bool:
+        return bool(self.succeeded and self.errors)
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.succeeded) and not self.errors
+
+
 def _safe_name(name: str, fallback: str = "file") -> str:
     name = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "_", name).strip(" .")
-    return name[:180] or fallback
+    name = name[:180] or fallback
+    stem = name.split(".", 1)[0].upper()
+    if stem in WINDOWS_RESERVED_NAMES:
+        name = f"_{name}"
+    return name
 
 
 def _normalize_url(value: str | None, page_url: str) -> str | None:
@@ -40,11 +77,9 @@ def _normalize_url(value: str | None, page_url: str) -> str | None:
     value = value.strip().replace("\\/", "/")
     value = value.replace("\\u002F", "/").replace("\\u002f", "/")
     value = value.replace("\\u0026", "&")
-    if value.startswith("//"):
-        value = "https:" + value
-    else:
-        value = urljoin(page_url, value)
-    if not value.startswith(("http://", "https://")):
+    value = urljoin(page_url, value)
+    parsed = urlparse(value)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
         return None
     return value
 
@@ -64,14 +99,17 @@ def _filename_from_url(
     if candidate and "." in candidate:
         return _safe_name(candidate, fallback)
     ext = mimetypes.guess_extension((content_type or "").split(";")[0].strip()) or ""
-    return f"{fallback}_{index:03d}{ext}"
+    return _safe_name(f"{fallback}_{index:03d}{ext}", fallback)
 
 
 def _unique_http(urls: Iterable[str | None]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for value in urls:
-        if not value or not value.startswith(("http://", "https://")):
+        if not value:
+            continue
+        parsed = urlparse(value)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
             continue
         if value not in seen:
             seen.add(value)
@@ -80,11 +118,82 @@ def _unique_http(urls: Iterable[str | None]) -> list[str]:
 
 
 def normalize_batch_urls(values: Iterable[str]) -> list[str]:
-    """Normalizza una lista di URL per il download multiplo mantenendo l'ordine."""
+    """Normalizza URL validi mantenendo ordine e rimuovendo duplicati."""
     return _unique_http(value.strip() for value in values if value and value.strip())
 
 
-def extract_media_from_html(page_url: str, html_text: str) -> dict[str, list[str]]:
+def validate_public_http_url(url: str) -> str:
+    """Rifiuta URL non HTTP(S), credenziali inline e destinazioni non pubbliche."""
+    parsed = urlparse(url.strip())
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("URL http:// o https:// non valido")
+    if parsed.username or parsed.password:
+        raise ValueError("Le credenziali nell'URL non sono consentite")
+
+    host = parsed.hostname.rstrip(".")
+    try:
+        literal_ip = ipaddress.ip_address(host)
+    except ValueError:
+        literal_ip = None
+
+    if literal_ip is not None:
+        if not literal_ip.is_global:
+            raise ValueError("Gli indirizzi IP locali o privati non sono consentiti")
+        return url
+
+    if host.lower() == "localhost" or host.lower().endswith(".localhost"):
+        raise ValueError("localhost non è consentito")
+
+    port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    try:
+        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"Host non risolvibile: {host}") from exc
+
+    if not addresses:
+        raise ValueError(f"Host non risolvibile: {host}")
+
+    for address in addresses:
+        ip_text = address[4][0].split("%", 1)[0]
+        try:
+            resolved_ip = ipaddress.ip_address(ip_text)
+        except ValueError as exc:
+            raise ValueError("Indirizzo IP risolto non valido") from exc
+        if not resolved_ip.is_global:
+            raise ValueError("La destinazione risolve a una rete locale o privata")
+    return url
+
+
+def _request_public(
+    url: str,
+    *,
+    headers: dict[str, str],
+    timeout: int,
+    stream: bool,
+) -> requests.Response:
+    """Segue pochi redirect validando ogni destinazione prima della connessione."""
+    current = url
+    for _ in range(MAX_REDIRECTS + 1):
+        validate_public_http_url(current)
+        response = requests.get(
+            current,
+            headers=headers,
+            timeout=timeout,
+            stream=stream,
+            allow_redirects=False,
+        )
+        if response.is_redirect or response.is_permanent_redirect:
+            location = response.headers.get("Location")
+            response.close()
+            if not location:
+                raise RuntimeError("Redirect senza destinazione")
+            current = urljoin(current, location)
+            continue
+        return response
+    raise RuntimeError("Troppi redirect HTTP")
+
+
+def extract_media_from_html(page_url: str, html_text: str) -> PageMedia:
     """Estrae URL media dichiarati nell'HTML statico, senza eseguire JavaScript."""
     soup = BeautifulSoup(html_text, "html.parser")
     images: list[str | None] = []
@@ -96,7 +205,11 @@ def extract_media_from_html(page_url: str, html_text: str) -> dict[str, list[str
             images.append(_normalize_url(tag.get(attr), page_url))
         srcset = tag.get("srcset") or tag.get("data-srcset")
         if srcset:
-            candidates = [part.strip().split(" ")[0] for part in srcset.split(",") if part.strip()]
+            candidates = [
+                part.strip().split(" ")[0]
+                for part in srcset.split(",")
+                if part.strip()
+            ]
             if candidates:
                 images.append(_normalize_url(candidates[-1], page_url))
 
@@ -171,14 +284,32 @@ def extract_media_from_html(page_url: str, html_text: str) -> dict[str, list[str
     }
 
 
-def fetch_page_media(page_url: str, log: LogFn) -> dict[str, list[str]]:
-    response = requests.get(
+def fetch_page_media(page_url: str, log: LogFn) -> PageMedia:
+    headers = {"User-Agent": USER_AGENT, "Accept": "text/html,*/*;q=0.8"}
+    with _request_public(
         page_url,
-        headers={"User-Agent": USER_AGENT, "Accept": "text/html,*/*;q=0.8"},
+        headers=headers,
         timeout=25,
-    )
-    response.raise_for_status()
-    result = extract_media_from_html(page_url, response.text)
+        stream=True,
+    ) as response:
+        response.raise_for_status()
+        content_length = response.headers.get("Content-Length")
+        if content_length and content_length.isdigit() and int(content_length) > MAX_HTML_BYTES:
+            raise RuntimeError("Pagina HTML troppo grande da analizzare")
+
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_content(256 * 1024):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > MAX_HTML_BYTES:
+                raise RuntimeError("Pagina HTML troppo grande da analizzare")
+            chunks.append(chunk)
+        encoding = response.encoding or "utf-8"
+        html_text = b"".join(chunks).decode(encoding, errors="replace")
+
+    result = extract_media_from_html(page_url, html_text)
     log(
         "HTML: "
         f"{len(result['videos'])} sorgenti video, "
@@ -198,28 +329,48 @@ def _download_binary(
     headers = {"User-Agent": USER_AGENT}
     if referer:
         headers["Referer"] = referer
-    with requests.get(
-        url,
-        headers=headers,
-        timeout=30,
-        stream=True,
-        allow_redirects=True,
-    ) as response:
+
+    with _request_public(url, headers=headers, timeout=30, stream=True) as response:
         response.raise_for_status()
         content_type = response.headers.get("Content-Type", "")
+        content_length = response.headers.get("Content-Length")
+        if content_length and content_length.isdigit() and int(content_length) > MAX_IMAGE_BYTES:
+            raise RuntimeError("File immagine troppo grande")
+
         filename = _filename_from_url(url, index, content_type, fallback="media")
         target = target_dir / filename
         stem, suffix = target.stem, target.suffix
         counter = 2
-        while target.exists():
+        while target.exists() or target.with_name(target.name + ".part").exists():
             target = target_dir / f"{stem}_{counter}{suffix}"
             counter += 1
-        with target.open("wb") as fh:
-            for chunk in response.iter_content(1024 * 256):
-                if chunk:
+
+        temp_target = target.with_name(target.name + ".part")
+        total = 0
+        try:
+            with temp_target.open("wb") as fh:
+                for chunk in response.iter_content(256 * 1024):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > MAX_IMAGE_BYTES:
+                        raise RuntimeError("File immagine troppo grande")
                     fh.write(chunk)
+            temp_target.replace(target)
+        except Exception:
+            temp_target.unlink(missing_ok=True)
+            raise
+
     log(f"Salvato: {target.name}")
     return target
+
+
+def _get_page_media(
+    page_url: str,
+    log: LogFn,
+    provider: PageMediaProvider | None,
+) -> PageMedia:
+    return provider() if provider else fetch_page_media(page_url, log)
 
 
 def download_images(
@@ -227,10 +378,18 @@ def download_images(
     output_dir: Path,
     log: LogFn,
     browser_candidates: Iterable[str] | None = None,
+    page_media_provider: PageMediaProvider | None = None,
 ) -> int:
+    image_dir = output_dir / "images"
+    image_dir.mkdir(parents=True, exist_ok=True)
+
+    if _suffix(page_url) in IMAGE_EXTENSIONS:
+        path = _download_binary(page_url, image_dir, log, 1)
+        return 1 if path.stat().st_size > 0 else 0
+
     html_candidates: list[str] = []
     try:
-        html_candidates = fetch_page_media(page_url, log)["images"]
+        html_candidates = _get_page_media(page_url, log, page_media_provider)["images"]
     except Exception as exc:
         log(f"Analisi immagini HTML non riuscita: {exc}")
 
@@ -239,9 +398,6 @@ def download_images(
     if not clean_urls:
         log("Nessuna immagine scaricabile rilevata.")
         return 0
-
-    image_dir = output_dir / "images"
-    image_dir.mkdir(parents=True, exist_ok=True)
 
     saved = 0
     for index, image_url in enumerate(clean_urls, start=1):
@@ -324,18 +480,21 @@ def _ytdlp_options(
     video_quality = _normalized_video_quality(video_quality)
     audio_quality = _normalized_audio_quality(audio_quality)
 
+    opts: dict = {
+        "outtmpl": str(target_dir / "%(title).180B [%(id)s].%(ext)s"),
+        "noplaylist": True,
+        "windowsfilenames": True,
+        "logger": Logger(),
+        "progress_hooks": [hook],
+        "quiet": True,
+        "no_warnings": True,
+        "http_headers": {"User-Agent": USER_AGENT},
+    }
+
     if audio_only:
-        opts: dict = {
-            "outtmpl": str(target_dir / "%(title).180B [%(id)s].%(ext)s"),
-            "format": "bestaudio/best" if has_ffmpeg else _audio_format_selector(audio_quality),
-            "noplaylist": True,
-            "windowsfilenames": True,
-            "logger": Logger(),
-            "progress_hooks": [hook],
-            "quiet": True,
-            "no_warnings": True,
-            "http_headers": {"User-Agent": USER_AGENT},
-        }
+        opts["format"] = (
+            "bestaudio/best" if has_ffmpeg else _audio_format_selector(audio_quality)
+        )
         if has_ffmpeg:
             opts["postprocessors"] = [
                 {
@@ -344,28 +503,23 @@ def _ytdlp_options(
                     "preferredquality": "0" if audio_quality == "best" else audio_quality,
                 }
             ]
-            quality_label = "migliore disponibile" if audio_quality == "best" else f"{audio_quality} kbps"
+            quality_label = (
+                "migliore disponibile" if audio_quality == "best" else f"{audio_quality} kbps"
+            )
             log(f"Audio: FFmpeg rilevato, conversione finale in MP3 ({quality_label}).")
         else:
-            quality_label = "migliore disponibile" if audio_quality == "best" else f"fino a {audio_quality} kbps"
+            quality_label = (
+                "migliore disponibile" if audio_quality == "best" else f"fino a {audio_quality} kbps"
+            )
             log(f"Audio: FFmpeg non rilevato, formato originale ({quality_label}).")
     else:
         if not has_ffmpeg:
             log("FFmpeg non rilevato: alcuni flussi separati audio/video potrebbero non essere unibili.")
             if audio_quality != "best":
                 log("Senza FFmpeg non posso scegliere separatamente il bitrate audio di un video già combinato.")
-        opts = {
-            "outtmpl": str(target_dir / "%(title).180B [%(id)s].%(ext)s"),
-            "format": _video_format_selector(video_quality, audio_quality, has_ffmpeg),
-            "merge_output_format": "mp4" if has_ffmpeg else None,
-            "noplaylist": True,
-            "windowsfilenames": True,
-            "logger": Logger(),
-            "progress_hooks": [hook],
-            "quiet": True,
-            "no_warnings": True,
-            "http_headers": {"User-Agent": USER_AGENT},
-        }
+        opts["format"] = _video_format_selector(video_quality, audio_quality, has_ffmpeg)
+        if has_ffmpeg:
+            opts["merge_output_format"] = "mp4"
 
     if referer:
         opts["http_headers"]["Referer"] = referer
@@ -396,6 +550,37 @@ def _download_with_ytdlp(
         ydl.download([target_url])
 
 
+def _try_detected_candidates(
+    candidates: list[str],
+    *,
+    target_dir: Path,
+    log: LogFn,
+    referer: str,
+    audio_only: bool,
+    video_quality: str,
+    audio_quality: str,
+    label: str,
+) -> None:
+    last_error: Exception | None = None
+    for index, media_url in enumerate(candidates, start=1):
+        try:
+            log(f"Tentativo {label} {index}/{len(candidates)}: {media_url[:120]}")
+            _download_with_ytdlp(
+                media_url,
+                target_dir,
+                log,
+                referer=referer,
+                audio_only=audio_only,
+                video_quality=video_quality,
+                audio_quality=audio_quality,
+            )
+            return
+        except Exception as exc:
+            last_error = exc
+            log(f"Sorgente {label} {index} non scaricata: {exc}")
+    raise RuntimeError(f"Le sorgenti {label} rilevate non sono risultate scaricabili.") from last_error
+
+
 def download_video(
     url: str,
     output_dir: Path,
@@ -403,6 +588,7 @@ def download_video(
     browser_candidates: Iterable[str] | None = None,
     video_quality: str = "best",
     audio_quality: str = "best",
+    page_media_provider: PageMediaProvider | None = None,
 ) -> None:
     video_dir = output_dir / "video"
     video_dir.mkdir(parents=True, exist_ok=True)
@@ -410,13 +596,25 @@ def download_video(
     direct_ext = _suffix(url)
     if direct_ext in VIDEO_EXTENSIONS or direct_ext in MANIFEST_EXTENSIONS:
         log("URL media diretto rilevato.")
-        _download_with_ytdlp(url, video_dir, log, video_quality=video_quality, audio_quality=audio_quality)
+        _download_with_ytdlp(
+            url,
+            video_dir,
+            log,
+            video_quality=video_quality,
+            audio_quality=audio_quality,
+        )
         return
 
     log("Metodo 1/3: analisi con yt-dlp…")
     first_error: Exception | None = None
     try:
-        _download_with_ytdlp(url, video_dir, log, video_quality=video_quality, audio_quality=audio_quality)
+        _download_with_ytdlp(
+            url,
+            video_dir,
+            log,
+            video_quality=video_quality,
+            audio_quality=audio_quality,
+        )
         return
     except Exception as exc:
         first_error = exc
@@ -425,7 +623,7 @@ def download_video(
     log("Metodo 2/3: analisi del codice HTML…")
     html_candidates: list[str] = []
     try:
-        html_candidates = fetch_page_media(url, log)["videos"]
+        html_candidates = _get_page_media(url, log, page_media_provider)["videos"]
     except Exception as exc:
         log(f"Analisi HTML non riuscita: {exc}")
 
@@ -444,21 +642,20 @@ def download_video(
     if not candidates:
         raise RuntimeError(
             "Nessuna sorgente video pubblicamente accessibile è stata rilevata. "
-            "Se il video è visibile nel browser, prova tramite l'estensione MediaGrab 0.3. "
+            f"Se il video è visibile nel browser, prova tramite l'estensione MediaGrab {__version__}. "
             "I contenuti protetti da DRM o controlli di accesso non vengono aggirati."
         ) from first_error
 
-    last_error: Exception | None = None
-    for index, media_url in enumerate(candidates, start=1):
-        try:
-            log(f"Tentativo sorgente {index}/{len(candidates)}: {media_url[:120]}")
-            _download_with_ytdlp(media_url, video_dir, log, referer=url, video_quality=video_quality, audio_quality=audio_quality)
-            return
-        except Exception as exc:
-            last_error = exc
-            log(f"Sorgente {index} non scaricata: {exc}")
-
-    raise RuntimeError("Le sorgenti video rilevate non sono risultate scaricabili.") from last_error
+    _try_detected_candidates(
+        candidates,
+        target_dir=video_dir,
+        log=log,
+        referer=url,
+        audio_only=False,
+        video_quality=video_quality,
+        audio_quality=audio_quality,
+        label="video",
+    )
 
 
 def download_audio(
@@ -467,6 +664,7 @@ def download_audio(
     log: LogFn,
     browser_candidates: Iterable[str] | None = None,
     audio_quality: str = "best",
+    page_media_provider: PageMediaProvider | None = None,
 ) -> None:
     audio_dir = output_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -478,13 +676,25 @@ def download_audio(
         or direct_ext in MANIFEST_EXTENSIONS
     ):
         log("URL media diretto rilevato: estraggo solo l'audio.")
-        _download_with_ytdlp(url, audio_dir, log, audio_only=True, audio_quality=audio_quality)
+        _download_with_ytdlp(
+            url,
+            audio_dir,
+            log,
+            audio_only=True,
+            audio_quality=audio_quality,
+        )
         return
 
     log("Audio 1/3: estrazione tramite yt-dlp…")
     first_error: Exception | None = None
     try:
-        _download_with_ytdlp(url, audio_dir, log, audio_only=True, audio_quality=audio_quality)
+        _download_with_ytdlp(
+            url,
+            audio_dir,
+            log,
+            audio_only=True,
+            audio_quality=audio_quality,
+        )
         return
     except Exception as exc:
         first_error = exc
@@ -493,7 +703,7 @@ def download_audio(
     log("Audio 2/3: analisi del codice HTML…")
     html_candidates: list[str] = []
     try:
-        media = fetch_page_media(url, log)
+        media = _get_page_media(url, log, page_media_provider)
         html_candidates = [*media["audios"], *media["videos"]]
     except Exception as exc:
         log(f"Analisi HTML non riuscita: {exc}")
@@ -517,27 +727,19 @@ def download_audio(
     if not candidates:
         raise RuntimeError(
             "Nessuna sorgente audio accessibile è stata rilevata. "
-            "Se il contenuto è riproducibile nel browser, prova con l'estensione MediaGrab 0.3."
+            f"Se il contenuto è riproducibile nel browser, prova con l'estensione MediaGrab {__version__}."
         ) from first_error
 
-    last_error: Exception | None = None
-    for index, media_url in enumerate(candidates, start=1):
-        try:
-            log(f"Tentativo audio {index}/{len(candidates)}: {media_url[:120]}")
-            _download_with_ytdlp(
-                media_url,
-                audio_dir,
-                log,
-                referer=url,
-                audio_only=True,
-                audio_quality=audio_quality,
-            )
-            return
-        except Exception as exc:
-            last_error = exc
-            log(f"Sorgente audio {index} non scaricata: {exc}")
-
-    raise RuntimeError("Le sorgenti audio rilevate non sono risultate scaricabili.") from last_error
+    _try_detected_candidates(
+        candidates,
+        target_dir=audio_dir,
+        log=log,
+        referer=url,
+        audio_only=True,
+        video_quality="best",
+        audio_quality=audio_quality,
+        label="audio",
+    )
 
 
 def download_url(
@@ -548,10 +750,13 @@ def download_url(
     browser_candidates: Iterable[str] | None = None,
     video_quality: str = "best",
     audio_quality: str = "best",
-) -> None:
+) -> DownloadResult:
     url = url.strip()
-    if not url.startswith(("http://", "https://")):
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
         raise ValueError("Inserisci un URL http:// o https:// valido.")
+    if mode not in VALID_MODES:
+        raise ValueError(f"Modalità non valida: {mode}")
 
     output_dir = Path(output).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -565,9 +770,18 @@ def download_url(
     if candidates:
         log(f"Sorgenti browser ricevute: {len(candidates)}")
 
-    errors: list[str] = []
+    result = DownloadResult()
+    page_media_cache: PageMedia | None = None
 
-    if mode in ("video", "all"):
+    def page_media_provider() -> PageMedia:
+        nonlocal page_media_cache
+        if page_media_cache is None:
+            page_media_cache = fetch_page_media(url, log)
+        return page_media_cache
+
+    provider = page_media_provider if mode == "all" else None
+
+    if mode in {"video", "all"}:
         try:
             download_video(
                 url,
@@ -576,9 +790,11 @@ def download_url(
                 browser_candidates=candidates,
                 video_quality=video_quality,
                 audio_quality=audio_quality,
+                page_media_provider=provider,
             )
+            result.succeeded.append("video")
         except Exception as exc:
-            errors.append(f"video: {exc}")
+            result.errors["video"] = str(exc)
             log(f"Video non scaricato: {exc}")
 
     if mode == "audio":
@@ -590,19 +806,30 @@ def download_url(
                 browser_candidates=candidates,
                 audio_quality=audio_quality,
             )
+            result.succeeded.append("audio")
         except Exception as exc:
-            errors.append(f"audio: {exc}")
+            result.errors["audio"] = str(exc)
             log(f"Audio non scaricato: {exc}")
 
-    if mode in ("images", "all"):
+    if mode in {"images", "all"}:
         try:
-            count = download_images(url, output_dir, log, browser_candidates=candidates)
+            count = download_images(
+                url,
+                output_dir,
+                log,
+                browser_candidates=candidates,
+                page_media_provider=provider,
+            )
+            if count <= 0:
+                raise RuntimeError("Nessuna immagine scaricabile rilevata")
+            result.succeeded.append("images")
             log(f"Immagini scaricate: {count}")
         except Exception as exc:
-            errors.append(f"immagini: {exc}")
+            result.errors["images"] = str(exc)
             log(f"Immagini non scaricate: {exc}")
 
-    if errors and mode != "all":
-        raise RuntimeError("; ".join(errors))
-    if errors and mode == "all" and len(errors) == 2:
-        raise RuntimeError("; ".join(errors))
+    if not result.succeeded:
+        raise RuntimeError("; ".join(f"{key}: {value}" for key, value in result.errors.items()))
+    if mode != "all" and result.errors:
+        raise RuntimeError("; ".join(f"{key}: {value}" for key, value in result.errors.items()))
+    return result

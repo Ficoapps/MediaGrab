@@ -8,13 +8,17 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from . import __version__
 from .config import AppConfig
 from .downloader import download_url, normalize_batch_urls
 from .server import LocalServer
 
+MAX_LOG_LINES = 5000
+APP_TITLE = f"MediaGrab {__version__}"
+
 TEXTS = {
     "it": {
-        "title": "MediaGrab 0.4",
+        "title": APP_TITLE,
         "subtitle": "Scarica video, audio e immagini scegliendo anche la qualità.",
         "urls": "URL (uno per riga)",
         "urls_help": "Puoi incollare più indirizzi: MediaGrab li elaborerà uno dopo l'altro.",
@@ -32,10 +36,12 @@ TEXTS = {
         "ready": "Pronto",
         "warning_no_urls": "Inserisci almeno un URL http:// o https://, uno per riga.",
         "processed": "{done}/{total} elaborati",
-        "errors": " · {count} errori",
+        "errors": " · {count} falliti",
+        "partials": " · {count} parziali",
         "completed": "Completato: {ok}/{total}",
-        "finished_partial": "Terminato: {ok}/{total} riusciti",
+        "finished_mixed": "Terminato: {ok} completi, {partial} parziali, {failed} falliti su {total}",
         "item_completed": "[{index}/{total}] Completato.",
+        "item_partial": "[{index}/{total}] Completato parzialmente: {error}",
         "item_error": "[{index}/{total}] Errore: {error}",
         "server_error": "Impossibile avviare il connettore browser: {error}",
         "modes": {
@@ -63,7 +69,7 @@ TEXTS = {
         },
     },
     "en": {
-        "title": "MediaGrab 0.4",
+        "title": APP_TITLE,
         "subtitle": "Download video, audio and images with selectable quality.",
         "urls": "URLs (one per line)",
         "urls_help": "Paste multiple addresses and MediaGrab will process them one after another.",
@@ -81,10 +87,12 @@ TEXTS = {
         "ready": "Ready",
         "warning_no_urls": "Enter at least one valid http:// or https:// URL, one per line.",
         "processed": "{done}/{total} processed",
-        "errors": " · {count} errors",
+        "errors": " · {count} failed",
+        "partials": " · {count} partial",
         "completed": "Completed: {ok}/{total}",
-        "finished_partial": "Finished: {ok}/{total} succeeded",
+        "finished_mixed": "Finished: {ok} complete, {partial} partial, {failed} failed out of {total}",
         "item_completed": "[{index}/{total}] Completed.",
+        "item_partial": "[{index}/{total}] Partially completed: {error}",
         "item_error": "[{index}/{total}] Error: {error}",
         "server_error": "Could not start browser connector: {error}",
         "modes": {
@@ -121,11 +129,10 @@ class MediaGrabApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.config_data = AppConfig.load()
-        if self.config_data.language not in TEXTS:
-            self.config_data.language = "it"
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.server = LocalServer(self.config_data, self.log)
+        self._log_lines = 0
 
         self.output_var = tk.StringVar(value=self.config_data.output_dir)
         self.mode_var = tk.StringVar()
@@ -319,6 +326,7 @@ class MediaGrabApp(tk.Tk):
         )
         self.config_data.language = LANGUAGE_LABELS.get(self.language_var.get(), self.lang)
         self.config_data.save()
+        self.output_var.set(self.config_data.output_dir)
 
     def _choose_folder(self) -> None:
         selected = filedialog.askdirectory(initialdir=self.output_var.get())
@@ -347,13 +355,14 @@ class MediaGrabApp(tk.Tk):
 
         def run() -> None:
             failed = 0
+            partial = 0
             for index, url in enumerate(urls, start=1):
                 self.log("")
                 self.log("=" * 64)
                 self.log(f"[{index}/{len(urls)}] {url}")
                 self.log("=" * 64)
                 try:
-                    download_url(
+                    result = download_url(
                         url,
                         output,
                         mode,
@@ -361,7 +370,20 @@ class MediaGrabApp(tk.Tk):
                         video_quality=video_quality,
                         audio_quality=audio_quality,
                     )
-                    self.log(texts["item_completed"].format(index=index, total=len(urls)))
+                    if result.partial:
+                        partial += 1
+                        error_text = "; ".join(
+                            f"{kind}: {error}" for kind, error in result.errors.items()
+                        )
+                        self.log(
+                            texts["item_partial"].format(
+                                index=index,
+                                total=len(urls),
+                                error=error_text,
+                            )
+                        )
+                    else:
+                        self.log(texts["item_completed"].format(index=index, total=len(urls)))
                 except Exception as exc:
                     failed += 1
                     self.log(
@@ -371,15 +393,22 @@ class MediaGrabApp(tk.Tk):
                     )
 
                 status = texts["processed"].format(done=index, total=len(urls))
+                if partial:
+                    status += texts["partials"].format(count=partial)
                 if failed:
                     status += texts["errors"].format(count=failed)
                 self.after(0, lambda value=status: self.status_var.set(value))
 
-            ok = len(urls) - failed
+            ok = len(urls) - failed - partial
             final = (
-                texts["finished_partial"].format(ok=ok, total=len(urls))
-                if failed
-                else texts["completed"].format(ok=ok, total=len(urls))
+                texts["completed"].format(ok=ok, total=len(urls))
+                if not failed and not partial
+                else texts["finished_mixed"].format(
+                    ok=ok,
+                    partial=partial,
+                    failed=failed,
+                    total=len(urls),
+                )
             )
             self.log(final)
             self.after(0, lambda value=final: self.status_var.set(value))
@@ -398,6 +427,11 @@ class MediaGrabApp(tk.Tk):
                 break
             self.log_text.configure(state="normal")
             self.log_text.insert("end", message + "\n")
+            self._log_lines += message.count("\n") + 1
+            if self._log_lines > MAX_LOG_LINES:
+                excess = self._log_lines - MAX_LOG_LINES
+                self.log_text.delete("1.0", f"{excess + 1}.0")
+                self._log_lines = MAX_LOG_LINES
             self.log_text.see("end")
             self.log_text.configure(state="disabled")
         self.after(100, self._drain_logs)
