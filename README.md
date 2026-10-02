@@ -1,8 +1,17 @@
-# MediaGrab 0.4.2
+# MediaGrab 0.4.3
 
 ## Italiano
 
 MediaGrab è un'app desktop per Windows con estensione Chrome/Edge che permette di rilevare e scaricare **video, audio e immagini pubblicamente accessibili** dalle pagine web.
+
+### Novità 0.4.3
+
+- Aggiunto il pulsante **Annulla** per interrompere in modo cooperativo i download avviati dall'app.
+- Il controllo di annullamento viene verificato durante download HTTP, analisi HTML e download yt-dlp.
+- Le immagini vengono scaricate con un massimo di **4 worker contemporanei** per velocizzare le pagine con molte immagini senza creare concorrenza incontrollata.
+- Le sorgenti immagini senza estensione vengono riconosciute anche tramite **Content-Type**.
+- I file temporanei `.part` vengono riservati in modo atomico per evitare collisioni durante download immagini paralleli.
+- Le sorgenti immagini vengono limitate a un massimo di **250 elementi per pagina** per contenere uso di memoria e rete.
 
 ### Novità 0.4.2
 
@@ -50,7 +59,11 @@ Per i video MediaGrab sceglie il miglior flusso disponibile entro la risoluzione
 6. Attiva **Modalità sviluppatore**.
 7. Seleziona **Carica estensione non pacchettizzata** e indica la cartella estratta.
 
-**App ed estensione 0.4.2 vanno usate insieme**, perché il collegamento locale usa il nuovo token di sessione.
+**App ed estensione 0.4.3 vanno usate insieme**, perché il collegamento locale usa il nuovo token di sessione.
+
+### Annullamento download
+
+Il pulsante **Annulla** interrompe in modo cooperativo il download corrente e ferma la coda successiva. Durante alcune fasi finali gestite da FFmpeg, come merge o conversione, l'interruzione può non essere istantanea.
 
 ### Download multiplo
 
@@ -70,6 +83,15 @@ MediaGrab non rimuove DRM, non aggira paywall e non forza accesso a contenuti ai
 ## English
 
 MediaGrab is a Windows desktop app with a Chrome/Edge extension that can detect and download publicly accessible **video, audio and images** from web pages.
+
+### What's new in 0.4.3
+
+- Added a **Cancel** button for cooperative cancellation of downloads started from the desktop app.
+- Cancellation is checked during HTTP downloads, HTML analysis and yt-dlp downloads.
+- Images are downloaded with at most **4 concurrent workers** to improve performance without unbounded concurrency.
+- Extensionless image sources can also be recognized through the HTTP **Content-Type**.
+- Temporary `.part` files are reserved atomically to avoid filename races during parallel image downloads.
+- Image sources are capped at **250 items per page** to bound memory and network usage.
 
 ### What's new in 0.4.2
 
@@ -117,7 +139,11 @@ For video, MediaGrab chooses the best stream available within the selected resol
 6. Enable **Developer mode**.
 7. Choose **Load unpacked** and select the extracted extension folder.
 
-**App and extension 0.4.2 must be used together** because the local connector now uses a session token.
+**App and extension 0.4.3 must be used together** because the local connector now uses a session token.
+
+### Cancelling downloads
+
+The **Cancel** button cooperatively stops the current desktop-app download and prevents later queued URLs from starting. During final FFmpeg merge or conversion steps, cancellation may not be instantaneous.
 
 ### Multiple downloads
 
