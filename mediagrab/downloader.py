@@ -5,6 +5,8 @@ import mimetypes
 import re
 import shutil
 import socket
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
@@ -32,6 +34,8 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp"}
 MAX_HTML_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_BYTES = 200 * 1024 * 1024
 MAX_REDIRECTS = 5
+MAX_IMAGE_WORKERS = 4
+MAX_IMAGE_CANDIDATES = 250
 WINDOWS_RESERVED_NAMES = {
     "CON",
     "PRN",
@@ -46,6 +50,26 @@ MEDIA_URL_RE = re.compile(
     r"m3u8|mpd|jpg|jpeg|png|webp|gif|avif)(?:\?[^\s\"'<>]*)?",
     re.IGNORECASE,
 )
+
+
+class DownloadCancelled(RuntimeError):
+    """Raised when the user requests cooperative cancellation."""
+
+
+def _raise_if_cancelled(cancel_event: threading.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise DownloadCancelled("Download annullato dall'utente")
+
+
+def _media_kind_from_content_type(content_type: str) -> str | None:
+    mime = (content_type or "").split(";", 1)[0].strip().lower()
+    if mime.startswith("image/"):
+        return "images"
+    if mime.startswith("video/"):
+        return "videos"
+    if mime.startswith("audio/"):
+        return "audios"
+    return None
 
 
 @dataclass
@@ -284,7 +308,12 @@ def extract_media_from_html(page_url: str, html_text: str) -> PageMedia:
     }
 
 
-def fetch_page_media(page_url: str, log: LogFn) -> PageMedia:
+def fetch_page_media(
+    page_url: str,
+    log: LogFn,
+    cancel_event: threading.Event | None = None,
+) -> PageMedia:
+    _raise_if_cancelled(cancel_event)
     headers = {"User-Agent": USER_AGENT, "Accept": "text/html,*/*;q=0.8"}
     with _request_public(
         page_url,
@@ -293,6 +322,16 @@ def fetch_page_media(page_url: str, log: LogFn) -> PageMedia:
         stream=True,
     ) as response:
         response.raise_for_status()
+
+        media_kind = _media_kind_from_content_type(
+            response.headers.get("Content-Type", "")
+        )
+        if media_kind:
+            result: PageMedia = {"videos": [], "audios": [], "images": []}
+            result[media_kind].append(page_url)
+            log(f"URL media diretto rilevato dal Content-Type: {media_kind}.")
+            return result
+
         content_length = response.headers.get("Content-Length")
         if content_length and content_length.isdigit() and int(content_length) > MAX_HTML_BYTES:
             raise RuntimeError("Pagina HTML troppo grande da analizzare")
@@ -300,6 +339,7 @@ def fetch_page_media(page_url: str, log: LogFn) -> PageMedia:
         chunks: list[bytes] = []
         total = 0
         for chunk in response.iter_content(256 * 1024):
+            _raise_if_cancelled(cancel_event)
             if not chunk:
                 continue
             total += len(chunk)
@@ -309,6 +349,7 @@ def fetch_page_media(page_url: str, log: LogFn) -> PageMedia:
         encoding = response.encoding or "utf-8"
         html_text = b"".join(chunks).decode(encoding, errors="replace")
 
+    _raise_if_cancelled(cancel_event)
     result = extract_media_from_html(page_url, html_text)
     log(
         "HTML: "
@@ -325,7 +366,10 @@ def _download_binary(
     log: LogFn,
     index: int,
     referer: str | None = None,
+    required_content_prefix: str | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> Path:
+    _raise_if_cancelled(cancel_event)
     headers = {"User-Agent": USER_AGENT}
     if referer:
         headers["Referer"] = referer
@@ -333,29 +377,54 @@ def _download_binary(
     with _request_public(url, headers=headers, timeout=30, stream=True) as response:
         response.raise_for_status()
         content_type = response.headers.get("Content-Type", "")
+        normalized_type = content_type.split(";", 1)[0].strip().lower()
+        if required_content_prefix:
+            has_expected_type = normalized_type.startswith(required_content_prefix)
+            known_extension = (
+                required_content_prefix == "image/" and _suffix(url) in IMAGE_EXTENSIONS
+            )
+            if not has_expected_type and not (not normalized_type and known_extension):
+                raise RuntimeError(
+                    f"Content-Type inatteso: {content_type or 'non dichiarato'}"
+                )
+
         content_length = response.headers.get("Content-Length")
         if content_length and content_length.isdigit() and int(content_length) > MAX_IMAGE_BYTES:
             raise RuntimeError("File immagine troppo grande")
 
         filename = _filename_from_url(url, index, content_type, fallback="media")
-        target = target_dir / filename
-        stem, suffix = target.stem, target.suffix
-        counter = 2
-        while target.exists() or target.with_name(target.name + ".part").exists():
-            target = target_dir / f"{stem}_{counter}{suffix}"
-            counter += 1
+        base_target = target_dir / filename
+        stem, suffix = base_target.stem, base_target.suffix
+        counter = 1
 
-        temp_target = target.with_name(target.name + ".part")
+        while True:
+            target = (
+                base_target
+                if counter == 1
+                else target_dir / f"{stem}_{counter}{suffix}"
+            )
+            if target.exists():
+                counter += 1
+                continue
+            temp_target = target.with_name(target.name + ".part")
+            try:
+                fh = temp_target.open("xb")
+                break
+            except FileExistsError:
+                counter += 1
+
         total = 0
         try:
-            with temp_target.open("wb") as fh:
+            with fh:
                 for chunk in response.iter_content(256 * 1024):
+                    _raise_if_cancelled(cancel_event)
                     if not chunk:
                         continue
                     total += len(chunk)
                     if total > MAX_IMAGE_BYTES:
                         raise RuntimeError("File immagine troppo grande")
                     fh.write(chunk)
+            _raise_if_cancelled(cancel_event)
             temp_target.replace(target)
         except Exception:
             temp_target.unlink(missing_ok=True)
@@ -369,8 +438,14 @@ def _get_page_media(
     page_url: str,
     log: LogFn,
     provider: PageMediaProvider | None,
+    cancel_event: threading.Event | None = None,
 ) -> PageMedia:
-    return provider() if provider else fetch_page_media(page_url, log)
+    _raise_if_cancelled(cancel_event)
+    return provider() if provider else fetch_page_media(
+        page_url,
+        log,
+        cancel_event=cancel_event,
+    )
 
 
 def download_images(
@@ -379,34 +454,92 @@ def download_images(
     log: LogFn,
     browser_candidates: Iterable[str] | None = None,
     page_media_provider: PageMediaProvider | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> int:
+    _raise_if_cancelled(cancel_event)
     image_dir = output_dir / "images"
     image_dir.mkdir(parents=True, exist_ok=True)
 
     if _suffix(page_url) in IMAGE_EXTENSIONS:
-        path = _download_binary(page_url, image_dir, log, 1)
+        path = _download_binary(
+            page_url,
+            image_dir,
+            log,
+            1,
+            required_content_prefix="image/",
+            cancel_event=cancel_event,
+        )
         return 1 if path.stat().st_size > 0 else 0
 
     html_candidates: list[str] = []
     try:
-        html_candidates = _get_page_media(page_url, log, page_media_provider)["images"]
+        html_candidates = _get_page_media(
+            page_url,
+            log,
+            page_media_provider,
+            cancel_event=cancel_event,
+        )["images"]
+    except DownloadCancelled:
+        raise
     except Exception as exc:
         log(f"Analisi immagini HTML non riuscita: {exc}")
 
-    dynamic = [u for u in (browser_candidates or []) if _suffix(u) in IMAGE_EXTENSIONS]
+    known_media_extensions = (
+        IMAGE_EXTENSIONS | VIDEO_EXTENSIONS | AUDIO_EXTENSIONS | MANIFEST_EXTENSIONS
+    )
+    dynamic = [
+        u
+        for u in (browser_candidates or [])
+        if _suffix(u) in IMAGE_EXTENSIONS or _suffix(u) not in known_media_extensions
+    ]
     clean_urls = _unique_http([*html_candidates, *dynamic])
+    if len(clean_urls) > MAX_IMAGE_CANDIDATES:
+        log(
+            f"Immagini: limitate alle prime {MAX_IMAGE_CANDIDATES} "
+            f"sorgenti su {len(clean_urls)} rilevate."
+        )
+        clean_urls = clean_urls[:MAX_IMAGE_CANDIDATES]
+
     if not clean_urls:
         log("Nessuna immagine scaricabile rilevata.")
         return 0
 
     saved = 0
-    for index, image_url in enumerate(clean_urls, start=1):
-        try:
-            path = _download_binary(image_url, image_dir, log, index, referer=page_url)
-            if path.stat().st_size > 0:
-                saved += 1
-        except Exception as exc:
-            log(f"Immagine saltata: {image_url} ({exc})")
+
+    def worker(item: tuple[int, str]) -> bool:
+        index, image_url = item
+        path = _download_binary(
+            image_url,
+            image_dir,
+            log,
+            index,
+            referer=page_url,
+            required_content_prefix="image/",
+            cancel_event=cancel_event,
+        )
+        return path.stat().st_size > 0
+
+    max_workers = min(MAX_IMAGE_WORKERS, len(clean_urls))
+    with ThreadPoolExecutor(
+        max_workers=max_workers,
+        thread_name_prefix="mediagrab-image",
+    ) as executor:
+        future_to_url = {
+            executor.submit(worker, item): item[1]
+            for item in enumerate(clean_urls, start=1)
+        }
+        for future in as_completed(future_to_url):
+            try:
+                if future.result():
+                    saved += 1
+            except DownloadCancelled:
+                for pending in future_to_url:
+                    pending.cancel()
+                raise
+            except Exception as exc:
+                image_url = future_to_url[future]
+                log(f"Immagine saltata: {image_url} ({exc})")
+
     return saved
 
 
@@ -456,6 +589,7 @@ def _ytdlp_options(
     audio_only: bool = False,
     video_quality: str = "best",
     audio_quality: str = "best",
+    cancel_event: threading.Event | None = None,
 ) -> dict:
     class Logger:
         def debug(self, msg: str) -> None:
@@ -472,6 +606,7 @@ def _ytdlp_options(
             log(f"Errore yt-dlp: {msg}")
 
     def hook(data: dict) -> None:
+        _raise_if_cancelled(cancel_event)
         if data.get("status") == "finished":
             label = "audio" if audio_only else "video"
             log(f"Download {label} completato. Elaborazione finale…")
@@ -534,22 +669,32 @@ def _download_with_ytdlp(
     audio_only: bool = False,
     video_quality: str = "best",
     audio_quality: str = "best",
+    cancel_event: threading.Event | None = None,
 ) -> None:
+    _raise_if_cancelled(cancel_event)
     validate_public_http_url(target_url)
 
     from yt_dlp import YoutubeDL
 
-    with YoutubeDL(
-        _ytdlp_options(
-            target_dir,
-            log,
-            referer=referer,
-            audio_only=audio_only,
-            video_quality=video_quality,
-            audio_quality=audio_quality,
-        )
-    ) as ydl:
-        ydl.download([target_url])
+    try:
+        with YoutubeDL(
+            _ytdlp_options(
+                target_dir,
+                log,
+                referer=referer,
+                audio_only=audio_only,
+                video_quality=video_quality,
+                audio_quality=audio_quality,
+                cancel_event=cancel_event,
+            )
+        ) as ydl:
+            ydl.download([target_url])
+    except Exception as exc:
+        if cancel_event is not None and cancel_event.is_set():
+            raise DownloadCancelled("Download annullato dall'utente") from exc
+        raise
+
+    _raise_if_cancelled(cancel_event)
 
 
 def _try_detected_candidates(
@@ -562,9 +707,11 @@ def _try_detected_candidates(
     video_quality: str,
     audio_quality: str,
     label: str,
+    cancel_event: threading.Event | None = None,
 ) -> None:
     last_error: Exception | None = None
     for index, media_url in enumerate(candidates, start=1):
+        _raise_if_cancelled(cancel_event)
         try:
             log(f"Tentativo {label} {index}/{len(candidates)}: {media_url[:120]}")
             _download_with_ytdlp(
@@ -575,8 +722,11 @@ def _try_detected_candidates(
                 audio_only=audio_only,
                 video_quality=video_quality,
                 audio_quality=audio_quality,
+                cancel_event=cancel_event,
             )
             return
+        except DownloadCancelled:
+            raise
         except Exception as exc:
             last_error = exc
             log(f"Sorgente {label} {index} non scaricata: {exc}")
@@ -591,7 +741,9 @@ def download_video(
     video_quality: str = "best",
     audio_quality: str = "best",
     page_media_provider: PageMediaProvider | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> None:
+    _raise_if_cancelled(cancel_event)
     video_dir = output_dir / "video"
     video_dir.mkdir(parents=True, exist_ok=True)
 
@@ -604,6 +756,7 @@ def download_video(
             log,
             video_quality=video_quality,
             audio_quality=audio_quality,
+            cancel_event=cancel_event,
         )
         return
 
@@ -616,8 +769,11 @@ def download_video(
             log,
             video_quality=video_quality,
             audio_quality=audio_quality,
+            cancel_event=cancel_event,
         )
         return
+    except DownloadCancelled:
+        raise
     except Exception as exc:
         first_error = exc
         log(f"yt-dlp non gestisce direttamente questa pagina: {exc}")
@@ -625,7 +781,14 @@ def download_video(
     log("Metodo 2/3: analisi del codice HTML…")
     html_candidates: list[str] = []
     try:
-        html_candidates = _get_page_media(url, log, page_media_provider)["videos"]
+        html_candidates = _get_page_media(
+            url,
+            log,
+            page_media_provider,
+            cancel_event=cancel_event,
+        )["videos"]
+    except DownloadCancelled:
+        raise
     except Exception as exc:
         log(f"Analisi HTML non riuscita: {exc}")
 
@@ -657,6 +820,7 @@ def download_video(
         video_quality=video_quality,
         audio_quality=audio_quality,
         label="video",
+        cancel_event=cancel_event,
     )
 
 
@@ -667,7 +831,9 @@ def download_audio(
     browser_candidates: Iterable[str] | None = None,
     audio_quality: str = "best",
     page_media_provider: PageMediaProvider | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> None:
+    _raise_if_cancelled(cancel_event)
     audio_dir = output_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
 
@@ -684,6 +850,7 @@ def download_audio(
             log,
             audio_only=True,
             audio_quality=audio_quality,
+            cancel_event=cancel_event,
         )
         return
 
@@ -696,8 +863,11 @@ def download_audio(
             log,
             audio_only=True,
             audio_quality=audio_quality,
+            cancel_event=cancel_event,
         )
         return
+    except DownloadCancelled:
+        raise
     except Exception as exc:
         first_error = exc
         log(f"yt-dlp non gestisce direttamente l'audio di questa pagina: {exc}")
@@ -705,8 +875,15 @@ def download_audio(
     log("Audio 2/3: analisi del codice HTML…")
     html_candidates: list[str] = []
     try:
-        media = _get_page_media(url, log, page_media_provider)
+        media = _get_page_media(
+            url,
+            log,
+            page_media_provider,
+            cancel_event=cancel_event,
+        )
         html_candidates = [*media["audios"], *media["videos"]]
+    except DownloadCancelled:
+        raise
     except Exception as exc:
         log(f"Analisi HTML non riuscita: {exc}")
 
@@ -741,6 +918,7 @@ def download_audio(
         video_quality="best",
         audio_quality=audio_quality,
         label="audio",
+        cancel_event=cancel_event,
     )
 
 
@@ -752,7 +930,9 @@ def download_url(
     browser_candidates: Iterable[str] | None = None,
     video_quality: str = "best",
     audio_quality: str = "best",
+    cancel_event: threading.Event | None = None,
 ) -> DownloadResult:
+    _raise_if_cancelled(cancel_event)
     url = url.strip()
     parsed = urlparse(url)
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
@@ -777,8 +957,13 @@ def download_url(
 
     def page_media_provider() -> PageMedia:
         nonlocal page_media_cache
+        _raise_if_cancelled(cancel_event)
         if page_media_cache is None:
-            page_media_cache = fetch_page_media(url, log)
+            page_media_cache = fetch_page_media(
+                url,
+                log,
+                cancel_event=cancel_event,
+            )
         return page_media_cache
 
     provider = page_media_provider if mode == "all" else None
@@ -793,8 +978,11 @@ def download_url(
                 video_quality=video_quality,
                 audio_quality=audio_quality,
                 page_media_provider=provider,
+                cancel_event=cancel_event,
             )
             result.succeeded.append("video")
+        except DownloadCancelled:
+            raise
         except Exception as exc:
             result.errors["video"] = str(exc)
             log(f"Video non scaricato: {exc}")
@@ -807,8 +995,11 @@ def download_url(
                 log,
                 browser_candidates=candidates,
                 audio_quality=audio_quality,
+                cancel_event=cancel_event,
             )
             result.succeeded.append("audio")
+        except DownloadCancelled:
+            raise
         except Exception as exc:
             result.errors["audio"] = str(exc)
             log(f"Audio non scaricato: {exc}")
@@ -821,11 +1012,14 @@ def download_url(
                 log,
                 browser_candidates=candidates,
                 page_media_provider=provider,
+                cancel_event=cancel_event,
             )
             if count <= 0:
                 raise RuntimeError("Nessuna immagine scaricabile rilevata")
             result.succeeded.append("images")
             log(f"Immagini scaricate: {count}")
+        except DownloadCancelled:
+            raise
         except Exception as exc:
             result.errors["images"] = str(exc)
             log(f"Immagini non scaricate: {exc}")

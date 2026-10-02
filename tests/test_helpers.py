@@ -1,6 +1,9 @@
 import json
 import socket
+import threading
 import time
+
+import pytest
 
 import requests
 
@@ -9,11 +12,14 @@ import mediagrab.downloader as downloader
 import mediagrab.server as server_module
 from mediagrab.config import AppConfig
 from mediagrab.downloader import (
+    DownloadCancelled,
     DownloadResult,
     _audio_format_selector,
     _download_with_ytdlp,
+    _media_kind_from_content_type,
     _safe_name,
     _video_format_selector,
+    _ytdlp_options,
     download_images,
     download_url,
     extract_media_from_html,
@@ -129,6 +135,40 @@ def test_ytdlp_rejects_private_target_before_extractor(tmp_path):
         pass
     else:
         raise AssertionError("Private yt-dlp target should be rejected")
+
+
+def test_content_type_classifier():
+    assert _media_kind_from_content_type("image/jpeg; charset=binary") == "images"
+    assert _media_kind_from_content_type("video/mp4") == "videos"
+    assert _media_kind_from_content_type("audio/mpeg") == "audios"
+    assert _media_kind_from_content_type("text/html") is None
+
+
+def test_download_url_honors_cancel_before_network(tmp_path):
+    cancel_event = threading.Event()
+    cancel_event.set()
+
+    with pytest.raises(DownloadCancelled):
+        download_url(
+            "https://example.test/page",
+            tmp_path,
+            "video",
+            lambda _: None,
+            cancel_event=cancel_event,
+        )
+
+
+def test_ytdlp_progress_hook_honors_cancel(tmp_path):
+    cancel_event = threading.Event()
+    cancel_event.set()
+    options = _ytdlp_options(
+        tmp_path,
+        lambda _: None,
+        cancel_event=cancel_event,
+    )
+
+    with pytest.raises(DownloadCancelled):
+        options["progress_hooks"][0]({"status": "downloading"})
 
 
 def test_download_images_accepts_direct_image_url(monkeypatch, tmp_path):

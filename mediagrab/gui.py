@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from . import __version__
 from .config import AppConfig
-from .downloader import download_url, normalize_batch_urls
+from .downloader import DownloadCancelled, download_url, normalize_batch_urls
 from .server import LocalServer
 
 MAX_LOG_LINES = 5000
@@ -30,6 +30,10 @@ TEXTS = {
         "language": "Lingua",
         "browser": "Attiva collegamento con estensione Chrome/Edge",
         "download": "Scarica",
+        "cancel": "Annulla",
+        "cancel_requested": "Annullamento richiesto…",
+        "cancelled": "Download annullato: {done}/{total} elaborati.",
+        "item_cancelled": "[{index}/{total}] Download annullato.",
         "clear": "Svuota URL",
         "open_folder": "Apri cartella",
         "activity": "Attività",
@@ -81,6 +85,10 @@ TEXTS = {
         "language": "Language",
         "browser": "Enable Chrome/Edge extension connection",
         "download": "Download",
+        "cancel": "Cancel",
+        "cancel_requested": "Cancellation requested…",
+        "cancelled": "Download cancelled: {done}/{total} processed.",
+        "item_cancelled": "[{index}/{total}] Download cancelled.",
         "clear": "Clear URLs",
         "open_folder": "Open folder",
         "activity": "Activity",
@@ -132,6 +140,7 @@ class MediaGrabApp(tk.Tk):
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.server = LocalServer(self.config_data, self.log)
+        self.cancel_event = threading.Event()
         self._log_lines = 0
 
         self.output_var = tk.StringVar(value=self.config_data.output_dir)
@@ -237,6 +246,12 @@ class MediaGrabApp(tk.Tk):
         actions.pack(fill="x", pady=(10, 12))
         self.download_btn = ttk.Button(actions, command=self._download_clicked)
         self.download_btn.pack(side="left")
+        self.cancel_btn = ttk.Button(
+            actions,
+            command=self._cancel_download,
+            state="disabled",
+        )
+        self.cancel_btn.pack(side="left", padx=(8, 0))
         self.clear_btn = ttk.Button(
             actions, command=lambda: self.url_text.delete("1.0", "end")
         )
@@ -265,6 +280,7 @@ class MediaGrabApp(tk.Tk):
         self.language_label.configure(text=self.t("language"))
         self.server_check.configure(text=self.t("browser"))
         self.download_btn.configure(text=self.t("download"))
+        self.cancel_btn.configure(text=self.t("cancel"))
         self.clear_btn.configure(text=self.t("clear"))
         self.open_folder_btn.configure(text=self.t("open_folder"))
         self.activity_label.configure(text=self.t("activity"))
@@ -350,13 +366,20 @@ class MediaGrabApp(tk.Tk):
         video_quality = self.config_data.video_quality
         audio_quality = self.config_data.audio_quality
 
+        self.cancel_event.clear()
         self.download_btn.configure(state="disabled")
+        self.cancel_btn.configure(state="normal")
         self.status_var.set(texts["processed"].format(done=0, total=len(urls)))
 
         def run() -> None:
             failed = 0
             partial = 0
+            processed = 0
+            cancelled = False
             for index, url in enumerate(urls, start=1):
+                if self.cancel_event.is_set():
+                    cancelled = True
+                    break
                 self.log("")
                 self.log("=" * 64)
                 self.log(f"[{index}/{len(urls)}] {url}")
@@ -369,6 +392,7 @@ class MediaGrabApp(tk.Tk):
                         self.log,
                         video_quality=video_quality,
                         audio_quality=audio_quality,
+                        cancel_event=self.cancel_event,
                     )
                     if result.partial:
                         partial += 1
@@ -384,6 +408,15 @@ class MediaGrabApp(tk.Tk):
                         )
                     else:
                         self.log(texts["item_completed"].format(index=index, total=len(urls)))
+                except DownloadCancelled:
+                    cancelled = True
+                    self.log(
+                        texts["item_cancelled"].format(
+                            index=index,
+                            total=len(urls),
+                        )
+                    )
+                    break
                 except Exception as exc:
                     failed += 1
                     self.log(
@@ -392,29 +425,44 @@ class MediaGrabApp(tk.Tk):
                         )
                     )
 
-                status = texts["processed"].format(done=index, total=len(urls))
+                processed = index
+                status = texts["processed"].format(done=processed, total=len(urls))
                 if partial:
                     status += texts["partials"].format(count=partial)
                 if failed:
                     status += texts["errors"].format(count=failed)
                 self.after(0, lambda value=status: self.status_var.set(value))
 
-            ok = len(urls) - failed - partial
-            final = (
-                texts["completed"].format(ok=ok, total=len(urls))
-                if not failed and not partial
-                else texts["finished_mixed"].format(
-                    ok=ok,
-                    partial=partial,
-                    failed=failed,
+            if cancelled:
+                final = texts["cancelled"].format(
+                    done=processed,
                     total=len(urls),
                 )
-            )
+            else:
+                ok = len(urls) - failed - partial
+                final = (
+                    texts["completed"].format(ok=ok, total=len(urls))
+                    if not failed and not partial
+                    else texts["finished_mixed"].format(
+                        ok=ok,
+                        partial=partial,
+                        failed=failed,
+                        total=len(urls),
+                    )
+                )
+
             self.log(final)
             self.after(0, lambda value=final: self.status_var.set(value))
             self.after(0, lambda: self.download_btn.configure(state="normal"))
+            self.after(0, lambda: self.cancel_btn.configure(state="disabled"))
 
         threading.Thread(target=run, daemon=True).start()
+
+    def _cancel_download(self) -> None:
+        if self.download_btn.instate(["disabled"]):
+            self.cancel_event.set()
+            self.status_var.set(self.t("cancel_requested"))
+            self.cancel_btn.configure(state="disabled")
 
     def log(self, message: str) -> None:
         self.log_queue.put(message)
@@ -459,6 +507,7 @@ class MediaGrabApp(tk.Tk):
             subprocess.Popen(["xdg-open", str(folder)])
 
     def _on_close(self) -> None:
+        self.cancel_event.set()
         self._save_config()
         self.server.stop()
         self.destroy()

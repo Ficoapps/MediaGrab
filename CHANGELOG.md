@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.3
+
+- Added cooperative cancellation for desktop-app downloads.
+- Added a translated Cancel button and cancellation status messages.
+- Cancellation checks now run during HTTP streaming, HTML analysis, yt-dlp progress hooks and multi-URL processing.
+- Added bounded parallel image downloads with up to 4 workers.
+- Added Content-Type based detection for direct media URLs, including extensionless image URLs.
+- Added atomic `.part` reservation to avoid filename races during concurrent image downloads.
+- Capped image candidates at 250 per page.
+- Added regression tests for cancellation and Content-Type classification.
+
 ## 0.4.2
 
 - Validate every URL before handing it to yt-dlp, including URLs discovered from HTML fallback detection.
