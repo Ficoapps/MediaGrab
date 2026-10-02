@@ -174,7 +174,7 @@ def test_ytdlp_progress_hook_honors_cancel(tmp_path):
 def test_download_images_accepts_direct_image_url(monkeypatch, tmp_path):
     calls = []
 
-    def fake_download(url, target_dir, log, index, referer=None):
+    def fake_download(url, target_dir, log, index, referer=None, **kwargs):
         calls.append((url, referer))
         path = target_dir / "image.jpg"
         path.write_bytes(b"image")
